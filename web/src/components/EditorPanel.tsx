@@ -425,7 +425,7 @@ function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 't
         <Box variant="awsui-key-label">{t('fromArchive')}</Box>
         <Button iconName="folder-open" onClick={() => setPicker(true)}>{t('addMultiple')}</Button>
       </div>
-      <AssetPicker visible={picker} onDismiss={() => setPicker(false)} kinds={['video', 'image', 'audio']}
+      <AssetPicker visible={picker} onDismiss={() => setPicker(false)} kinds={['video', 'image', 'audio', 'document']}
         title={t('addMultiple')} confirmText={t('addToTimeline')}
         onConfirm={(picked) => {
           setPicker(false);

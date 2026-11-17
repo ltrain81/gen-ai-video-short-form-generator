@@ -133,3 +133,18 @@ def to_edl(tl: dict, assets: dict, title: str) -> str:
 
 FORMATS = {"otio": (to_otio, "application/json", "otio"), "fcpxml": (to_fcpxml, "application/xml", "fcpxml"),
            "edl": (to_edl, "text/plain", "edl")}
+
+
+def export_project(principal, project: dict, fmt: str) -> dict:
+    """Shared by the API and the agent: {filename, contentType, content}."""
+    from . import acl, ddb, projects
+    if fmt not in FORMATS:
+        raise ValueError(f"format must be one of {sorted(FORMATS)}")
+    tl = projects.load_timeline(project)
+    ids = {i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
+    assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids)
+              if acl.effective_role(principal, a)}
+    fn, ctype, ext = FORMATS[fmt]
+    title = (tl.get("meta", {}).get("title") or project.get("title") or "project")[:60]
+    safe = "".join(ch if ch.isalnum() or ch in " -_." else "_" for ch in title).strip() or "project"
+    return {"filename": f"{safe}.{ext}", "contentType": ctype, "content": fn(tl, assets, project.get("title") or "Shorts")}

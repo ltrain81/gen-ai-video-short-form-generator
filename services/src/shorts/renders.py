@@ -53,7 +53,9 @@ def _update(project_id: str, rid: str, **fields) -> None:
 def media_map(timeline: dict, quality: str) -> dict:
     """assetId → presigned inputs. Final renders read originals (best quality); previews read 720p proxies."""
     out = {}
-    ids = {i["assetId"] for t in timeline["tracks"] for i in t["items"] if i.get("assetId")}
+    ids = {i["assetId"] for t in timeline["tracks"] for i in t["items"] if i.get("assetId")} | {
+        e["assetId"] for t in timeline["tracks"] for i in t["items"] for e in (i.get("effects") or [])
+        if isinstance(e, dict) and e.get("type") == "lut" and e.get("assetId")}
     for aid in ids:
         a = ddb.get(f"ASSET#{aid}", "META") or {}
         content = ddb.get(f"CONTENT#{a.get('contentKey', '')}", "META") if a.get("contentKey") else None

@@ -273,19 +273,33 @@ def look(ctx: ToolContext, args: dict) -> ToolResult:
       {"assetId": {"type": "string"}, "question": {"type": "string"}, "startSec": {"type": "number"},
        "endSec": {"type": "number"}}, ["assetId", "question"])
 def ask_video(ctx: ToolContext, args: dict) -> ToolResult:
+    """Long videos are analysed in chunks: ask every chunk the range overlaps (in parallel) and merge."""
+    from concurrent.futures import ThreadPoolExecutor
     a = _asset(ctx, args["assetId"])
     chunks = _manifest(a).get("chunks", [])
-    start, end = args.get("startSec"), args.get("endSec")
-    chunk = next((c for c in chunks if start is None or c["startSec"] <= float(start) < c["endSec"]), chunks[0])
-    off = chunk["startSec"]
-    answer = models.pegasus_ask(storage.s3_uri(chunk["key"]),
-                                args["question"] + " " + models.language_instruction(
-                                    ingest.LANGUAGES.get(_lang(a), "English")) +
-                                " Give timestamps in seconds from the start of this clip.",
-                                None if start is None else max(0.0, float(start) - off),
-                                None if end is None else min(chunk["endSec"], float(end)) - off)
-    return ToolResult({"answer": answer, "timestampOffsetSec": off,
-                       "note": "Add timestampOffsetSec to timestamps in the answer to get source time."})
+    if not chunks:
+        raise ValueError("This asset has no video analysis chunks")
+    start = float(args["startSec"]) if args.get("startSec") is not None else None
+    end = float(args["endSec"]) if args.get("endSec") is not None else None
+    hit = [c for c in chunks if (start is None or c["endSec"] > start) and (end is None or c["startSec"] < end)] or chunks[:1]
+    hit = hit[:8]
+    instr = " " + models.language_instruction(ingest.LANGUAGES.get(_lang(a), "English")) + \
+        " Give timestamps in seconds from the start of this clip."
+
+    def one(c: dict) -> dict:
+        off = c["startSec"]
+        s0 = None if start is None or start <= off else start - off
+        e0 = None if end is None or end >= c["endSec"] else end - off
+        try:
+            ans = models.pegasus_ask(storage.s3_uri(c["key"]), args["question"] + instr, s0, e0)
+        except Exception as exc:  # noqa: BLE001 - one failing chunk should not lose the others
+            ans = f"(error: {exc})"
+        return {"chunkStartSec": off, "chunkEndSec": c["endSec"], "answer": ans}
+
+    with ThreadPoolExecutor(max_workers=min(4, len(hit))) as ex:
+        parts = list(ex.map(one, hit))
+    return ToolResult({"answers": parts, "note": "Timestamps in each answer are relative to its chunkStartSec — add it "
+                                                 "to get source time."})
 
 
 # ================================================================== decide
@@ -327,6 +341,72 @@ def _beats(a: dict) -> list[float]:
     return out
 
 
+@tool("analyze_audio",
+      "Audio analysis of a time range: silences (for removing pauses/dead air), loudness (LUFS), beat times and an "
+      "estimated tempo (BPM) for cutting to music.",
+      {"assetId": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"},
+       "silenceDb": {"type": "number", "description": "Silence threshold in dB (default -35)"},
+       "minSilenceSec": {"type": "number", "description": "Minimum silence length (default 0.4)"}}, ["assetId"])
+def analyze_audio(ctx: ToolContext, args: dict) -> ToolResult:
+    import re
+    import subprocess
+    a = _asset(ctx, args["assetId"])
+    m = _manifest(a)
+    key = m.get("audioKey") or m.get("proxyKey") or a.get("originalKey")
+    url = storage.presign_get(key, 900)
+    start = float(args.get("startSec", 0))
+    end = float(args.get("endSec", a.get("durationSec") or start + 600))
+    end = min(end, start + 3600)
+    db, dmin = float(args.get("silenceDb", -35)), float(args.get("minSilenceSec", 0.4))
+    from . import safeurl
+    safeurl.check(url)
+    p = subprocess.run([frames.ffmpeg_bin(), "-hide_banner", "-nostats", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",  # nosec B603
+                        "-i", url, "-vn", "-af", f"silencedetect=noise={db}dB:d={dmin},ebur128=framelog=quiet",
+                        "-f", "null", "-"], capture_output=True, text=True, timeout=240)
+    log_ = p.stderr
+    silences, cur = [], None
+    for line in log_.splitlines():
+        if "silence_start" in line:
+            cur = float(re.search(r"silence_start: (-?[\d.]+)", line).group(1)) + start
+        elif "silence_end" in line and cur is not None:
+            e = float(re.search(r"silence_end: ([\d.]+)", line).group(1)) + start
+            silences.append({"startSec": round(max(start, cur), 3), "endSec": round(e, 3), "dur": round(e - max(start, cur), 3)})
+            cur = None
+    if cur is not None:
+        silences.append({"startSec": round(cur, 3), "endSec": round(end, 3), "dur": round(end - cur, 3)})
+    lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", log_)
+    lra = re.findall(r"LRA:\s+([\d.]+) LU", log_)
+    beats = [b for b in _beats(a) if start <= b <= end]
+    bpm = None
+    if len(beats) > 8:
+        gaps = sorted(b2 - b1 for b1, b2 in zip(beats, beats[1:]) if 0.25 < b2 - b1 < 1.5)
+        if gaps:
+            med = gaps[len(gaps) // 2]
+            bpm = round(60 / med, 1)
+            while bpm < 70:
+                bpm *= 2
+            while bpm > 180:
+                bpm /= 2
+    return ToolResult({"range": [start, end], "silences": silences[:300], "silenceTotalSec": round(sum(x["dur"] for x in silences), 2),
+                       "integratedLufs": float(lufs[-1]) if lufs else None, "loudnessRangeLu": float(lra[-1]) if lra else None,
+                       "beats": beats[:400], "bpm": bpm})
+
+
+@tool("export_timeline", "Export the current timeline for another editor (OpenTimelineIO, FCPXML for Final Cut / "
+      "DaVinci / Premiere, or CMX3600 EDL). The user gets a download link in the chat.",
+      {"format": {"type": "string", "enum": ["otio", "fcpxml", "edl"]}}, ["format"])
+def export_timeline(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import export as exporter
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    r = exporter.export_project(ctx.principal, project, args["format"])
+    key = f"exports/{project['tenantId']}/{project['projectId']}/{r['filename']}"
+    storage.s3().put_object(Bucket=get_config().media_bucket, Key=key, Body=r["content"].encode("utf-8"),
+                            ContentType=r.get("contentType", "application/octet-stream"))
+    url = storage.presign_get(key, 3600, r["filename"])
+    _publish(ctx, {"type": "download", "url": url, "filename": r["filename"]})
+    return ToolResult({"filename": r["filename"], "status": "download link shown to the user"})
+
+
 @tool("analyze_framing",
       "Decide how a 16:9 (or any) source should fill the target aspect for a time range: per-shot subject focus "
       "point and a layout (crop = follow the subject, split = speaker + slide/board stacked, fit_blur = whole frame on "
@@ -335,18 +415,22 @@ def _beats(a: dict) -> list[float]:
        "aspect": {"type": "string", "description": "Target frame 'W:H' — the canvas, or the box the clip will fill "
                   "(e.g. '1:1' for a square box inside a 9:16 canvas). Default: the canvas aspect."},
        "intent": {"type": "string", "description": "What must stay visible, e.g. 'follow the ball', "
-                                                    "'keep lecturer and the board'"}},
+                                                    "'keep lecturer and the board'"},
+       "maxZoom": {"type": "number", "description": "Upper bound for zoom-in (default 1.6; up to 4)"},
+       "maxShots": {"type": "integer", "description": "Max shots analysed (default 12, up to 30)"}},
       ["assetId", "startSec", "endSec"])
 def analyze_framing(ctx: ToolContext, args: dict) -> ToolResult:
     a = _asset(ctx, args["assetId"])
     start, end = float(args["startSec"]), float(args["endSec"])
     shots = [s for s in _shots(a) if start <= s < end]
     bounds = sorted({start, *shots, end})
-    segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1) if bounds[i + 1] - bounds[i] > 0.3][:12]
+    segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)
+            if bounds[i + 1] - bounds[i] > 0.3][:max(1, min(30, int(args.get("maxShots", 12))))]
     times = [round((s + e) / 2, 3) for s, e in segs] or [round((start + end) / 2, 3)]
     imgs = frames.frames(_proxy_url(a), times, 480)
     aspect = args.get("aspect") or projects.load_timeline(projects.require_project(ctx.principal, ctx.project_id, "view")[0])["settings"].get("aspect", "9:16")
-    plan = models.framing_plan(imgs, times, aspect, args.get("intent", ""), a.get("width"), a.get("height"))
+    plan = models.framing_plan(imgs, times, aspect, args.get("intent", ""), a.get("width"), a.get("height"),
+                               max_zoom=max(1.0, min(4.0, float(args.get("maxZoom", 1.6)))))
     path, layouts = [], []
     for (s, e), f in zip(segs or [(start, end)], plan):
         x, y, scale = float(f.get("x", 0.5)), float(f.get("y", 0.5)), float(f.get("zoom", 1.0))
@@ -467,27 +551,36 @@ OPS_DOC = (
     "tint} | blur {radius px} | vignette {amount 0..1} | sharpen {amount} | denoise {amount} | grayscale | sepia | invert "
     "| pixelate {size} | mirror | chromaKey {color, similarity, smoothness} (overlays: green screen) | eq {low, mid, high "
     "-1..1} (audio) | audioDenoise {amount} | pitch {factor}].\n"
-    "  transitionIn.type: fade|dissolve|dipToBlack|dipToWhite|wipeLeft|wipeUp|slideLeft|zoom|blur or ANY ffmpeg xfade "
-    "name (circleopen, radial, pixelize, slideright, smoothup, diagtl, squeezeh, coverleft, revealup, …).\n"
+    "  transitionIn / transitionOut {type, duration}: on main clips = xfade between neighbours (fade|dissolve|dipToBlack|"
+    "dipToWhite|wipeLeft|wipeUp|slideLeft|zoom|blur or ANY ffmpeg xfade name: circleopen, radial, pixelize, slideright, "
+    "smoothup, diagtl, squeezeh, coverleft, revealup, …; transitionOut on the last clip fades out). On overlay layers, "
+    "text and shapes = enter/exit motion: fade, slideLeft|slideRight|slideUp|slideDown, zoom (all also fade).\n"
+    "  keyframes {prop: [{t (sec from item start), v, ease linear|easeIn|easeOut|easeInOut|hold}]}: overlay layers x, y, "
+    "scale, rotation, opacity; main clips scale (≥1), x, y (pan/zoom) and rotation; text x, y, scale, rotation, opacity; "
+    "shapes x, y, opacity; any clip volume (audio automation).\n"
+    "  speedCurve [{t (source sec from srcIn), v (speed)}] = speed ramp (e.g. slow-mo into the goal then back to 1×).\n"
+    "  lut effect {type: lut, assetId (an uploaded .cube file), intensity 0..1}.\n"
+    "  kenBurns null on images = static (no movement).\n"
     "TEXT: add_text {text, start, duration, track?, role?, position {x, y, anchor center|top|bottom, maxWidth}, "
     "style {font, size (fraction of height), weight, color, background (box colour, rgba ok), padding, stroke {color, "
     "width}, shadow {color, x, y, blur}, align left|center|right, italic, uppercase, letterSpacing}, animation {in: none|"
     "fade|pop|slideUp|slideDown|typewriter|wordByWord, out: none|fade}, rotation, opacity}\n"
     "SHAPES: add_shape {shape rect|roundRect|ellipse|progressBar, box {x,y,w,h}, fill (rgba ok), stroke?, radius? "
     "(roundRect 0..1), opacity?, start, duration, track?} — boxes behind titles, bars, frames, dividers, progress bars.\n"
-    "CAPTIONS: captions {preset clean|bold|karaoke|pop|boxed|minimal, style?, y?} (word-timed from the main track's "
-    "speech) · add_caption {text | words [{s,e,w}], start, duration, track?, preset?, style?, position {x, y}} (any "
+    "CAPTIONS: captions {preset clean|bold|karaoke|pop|boxed|minimal, style? (wordAnim pop|bounce|grow animates the "
+    "active word), y?, source? (track id, e.g. 'a2' for a voiceover/TTS track; default main)} (word-timed from speech) · add_caption {text | words [{s,e,w}], start, duration, track?, preset?, style?, position {x, y}} (any "
     "caption, e.g. for voiceover/TTS) · update {itemId, set:{words|style|position|preset}}.\n"
     "TRACKS: add_track {kind video|overlay|text|caption|audio, name?, index?, audioRole? dialogue|music|voiceover|sfx, "
     "volume?} · update_track {trackId, set:{name, volume, muted, hidden, locked, audioRole}} · move_track {trackId, "
     "index} (stacking: index 0 = bottom) · remove_track {trackId} · clear_track {track}. Overlay clips are silent "
-    "unless volume > 0.\n"
+    "unless volume > 0. update_track {trackId: 'v1', set:{magnetic:false}} makes the main track free-positioned (items keep "
+    "their start; gaps show the background; add_clip/move take `start`).\n"
     "PROJECT: settings {set:{aspect ('9:16', '21:9', any 'W:H'), width+height (custom px, 240–4096), fps, "
     "background, loudness (LUFS), safeZone, ducking {enabled, threshold, ratio, attack, release}}} · meta {set:{title, "
     "description, hashtags, thumbnailAt}} · marker {t, label, kind} · brand {kit}\n"
     "Track v1 is the magnetic main track (sequential, no gaps). Default tracks: o1 B-roll/PIP, t1 text, c1 captions, "
-    "a1 music, a2 voiceover — add more as needed. Pinned paths (user edits) cannot be changed — work around them. "
-    "After a visual change, verify with preview_frames.")
+    "a1 music, a2 voiceover — add more as needed. Music ducks under dialogue and voiceover. Pinned paths (user edits) "
+    "cannot be changed — work around them. After a visual change, verify with preview_frames.")
 
 
 @tool("edit_timeline", "Apply edit operations to the project timeline and save a new version. " + OPS_DOC,
@@ -499,17 +592,15 @@ def edit_timeline(ctx: ToolContext, args: dict) -> ToolResult:
     project = ddb.get(f"PROJ#{ctx.project_id}", "META", consistent=True)
     tl = projects.load_timeline(project)
     ops = list(args.get("ops") or [])[:200]
-    ids = {o["assetId"] for o in ops if o.get("assetId")} | {
-        i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")} | {
-        o["kit"][k] for o in ops if o.get("op") == "brand" and isinstance(o.get("kit"), dict)
-        for k in ("logoAssetId", "introAssetId", "outroAssetId") if o["kit"].get(k)}
+    ids = set().union(set(), *[timeline_ops.asset_refs(o) for o in ops if isinstance(o, dict)]) | {
+        i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
     accessible = acl.accessible_asset_ids(ctx.principal)
     assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)
               if a.get("status") == "ready"}
     for o in ops:
         if o.get("op") == "captions" and "transcripts" not in o:
-            main = timeline_ops.main_track(tl)
-            o["transcripts"] = {aid: _transcript(assets[aid]) for aid in {i.get("assetId") for i in main["items"]}
+            src = timeline_ops.track(tl, o["source"]) if o.get("source") not in (None, "main") else timeline_ops.main_track(tl)
+            o["transcripts"] = {aid: _transcript(assets[aid]) for aid in {i.get("assetId") for i in src["items"]}
                                 if aid in assets}
     new_tl, results = timeline_ops.apply(tl, ops, "agent", assets)
     applied = [r for r in results if r["ok"]]

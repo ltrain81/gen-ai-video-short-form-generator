@@ -369,5 +369,7 @@ export const en: typeof ko = {
   "trackKind_overlay": "Video/image layer",
   "trackKind_text": "Text & shapes",
   "trackKind_caption": "Captions",
-  "trackKind_audio": "Audio"
+  "trackKind_audio": "Audio",
+  "magneticTrack": "Magnetic main track on/off",
+  "downloadReady": "Download ready"
 };

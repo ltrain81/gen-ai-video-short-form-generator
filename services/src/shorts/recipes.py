@@ -75,6 +75,11 @@ def put_recipe(tenant_id: str, rid: str, body: dict, sub: str) -> dict:
     name = body.get("name")
     if isinstance(name, str):
         name = {"ko": name, "en": name}
+    from . import timeline_ops
+    try:
+        timeline_ops._canvas_for(body.get("aspect", "9:16"), {})
+    except timeline_ops.OpError as exc:
+        raise ValueError(str(exc)) from exc
     item = {"PK": f"TENANT#{tenant_id}", "SK": f"RECIPE#{rid}", "name": name or {"ko": rid, "en": rid},
             "skill": str(body.get("skill", ""))[:64], "aspect": body.get("aspect", "9:16"),
             "lengthSec": int(body.get("lengthSec", 45)), "captions": str(body.get("captions", "clean"))[:20],

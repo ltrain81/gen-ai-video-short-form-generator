@@ -95,6 +95,19 @@ def summarize(name: str, args: Any, output: Any = None) -> str:
             return str(a.get("name") or "")
         if name in {"estimate_generation", "generate_media"}:
             return f"{a.get('kind', '')} {_q(a.get('prompt') or a.get('text'), 40)}".strip()
+        if name == "preview_frames":
+            ts_ = a.get("times") or []
+            return ", ".join(_t(x) for x in ts_[:6]) + (f" (+{len(ts_) - 6})" if len(ts_) > 6 else "") if ts_ else "auto"
+        if name == "analyze_audio" and isinstance(o, dict):
+            sil = len(o.get("silences") or [])
+            return " · ".join(x for x in (f"silences {sil}" if sil else "", f"{o['integratedLufs']} LUFS" if o.get("integratedLufs") is not None else "",
+                                           f"{o['bpm']} BPM" if o.get("bpm") else "") if x)
+        if name in {"render_video"}:
+            return str(a.get("quality") or "preview")
+        if name in {"export_timeline"}:
+            return str(a.get("format") or "")
+        if name == "restore_version":
+            return f"v{a.get('version')}"
         if name == "remember":
             return f"{a.get('key')}"
         if name == "get_asset_overview" and isinstance(o, dict):

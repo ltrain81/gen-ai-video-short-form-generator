@@ -220,17 +220,17 @@ For each frame (in order; source timestamps {times}) decide:
   stack them), "fit_blur" (wide scene/landscape/group where cropping loses the point: show whole frame over a blurred
   fill), or "letterbox" (text/graphics that must not be cut).
 - x, y: center of the region of interest in the source frame, normalized 0..1 (0,0 = top-left).
-- zoom: 1.0 = tightest crop that still fits the target aspect at full source height; >1 zooms in further (max 1.6).
+- zoom: 1.0 = tightest crop that still fits the target aspect at full source height; >1 zooms in further (max {max_zoom}).
 - subject: short label of what you keep in frame.
 Prefer stability: reuse the previous frame's values unless the subject clearly moved or the shot changed.
 Reply with JSON only: {{"frames": [{{"x": 0.5, "y": 0.5, "zoom": 1.0, "layout": "crop", "subject": "..."}}, ...]}}"""
 
 
 def framing_plan(images: list[bytes], times: list[float], aspect: str, intent: str, width: int | None,
-                 height: int | None) -> list[dict]:
+                 height: int | None, max_zoom: float = 1.6) -> list[dict]:
     src = f"{width}x{height}" if width and height else "16:9"
     content: list[dict] = [{"image": {"format": "jpeg", "source": {"bytes": img}}} for img in images]
-    content.append({"text": FRAMING_PROMPT.format(src=src, aspect=aspect, intent=intent or "keep the main subject",
+    content.append({"text": FRAMING_PROMPT.format(src=src, aspect=aspect, max_zoom=max_zoom, intent=intent or "keep the main subject",
                                                   times=", ".join(f"{t:.1f}s" for t in times))})
     resp = runtime().converse(modelId=get_config().vision_model_id, messages=[{"role": "user", "content": content}],
                               inferenceConfig={"maxTokens": 2048})
@@ -242,7 +242,7 @@ def framing_plan(images: list[bytes], times: list[float], aspect: str, intent: s
     frames = (frames + [frames[-1] if frames else {}] * len(images))[: len(images)]
     clamp = lambda v, lo, hi, d: min(hi, max(lo, float(v))) if isinstance(v, (int, float)) else d  # noqa: E731
     return [{"x": clamp(f.get("x"), 0, 1, 0.5), "y": clamp(f.get("y"), 0, 1, 0.5),
-             "zoom": clamp(f.get("zoom"), 1, 1.6, 1.0),
+             "zoom": clamp(f.get("zoom"), 1, max_zoom, 1.0),
              "layout": f.get("layout") if f.get("layout") in {"crop", "split", "fit_blur", "letterbox"} else "crop",
              "subject": str(f.get("subject", ""))[:80]} for f in frames]
 

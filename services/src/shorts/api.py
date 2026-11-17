@@ -693,8 +693,10 @@ def create_project(req: Request):
     if req.body.get("recipe") and not recipe:
         raise BadRequest("Unknown recipe")
     aspect = req.body.get("aspect") or (recipe or {}).get("aspect") or "9:16"
-    if aspect not in projects.ASPECTS:
-        raise BadRequest(f"aspect must be one of {sorted(projects.ASPECTS)}")
+    try:
+        timeline_ops._canvas_for(aspect, {})
+    except timeline_ops.OpError as exc:
+        raise BadRequest(str(exc)) from exc
     item = projects.create(req.principal, str(req.body.get("title") or "Untitled")[:200], aspect,
                            str(req.body.get("synopsis", ""))[:4000], [str(a) for a in req.body.get("assetIds", [])])
     extra = {}
@@ -773,7 +775,7 @@ def apply_ops(req: Request):
     if int(base) != project["currentVersion"]:
         raise Conflict("Timeline changed; reload")
     tl = projects.load_timeline(project)
-    ids = {o["assetId"] for o in ops if isinstance(o, dict) and o.get("assetId")} | {
+    ids = set().union(set(), *[timeline_ops.asset_refs(o) for o in ops if isinstance(o, dict)]) | {
         i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
     accessible = acl.accessible_asset_ids(p)
     assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)}
@@ -786,9 +788,9 @@ def apply_ops(req: Request):
     for o in ops:
         if isinstance(o, dict) and o.get("op") == "captions" and "transcripts" not in o:
             from . import agent_tools
-            main = timeline_ops.main_track(tl)
+            src = timeline_ops.track(tl, o["source"]) if o.get("source") not in (None, "main") else timeline_ops.main_track(tl)
             o["transcripts"] = {aid: agent_tools._transcript(assets[aid]) for aid in
-                                {i.get("assetId") for i in main["items"]} if aid in assets}
+                                {i.get("assetId") for i in src["items"]} if aid in assets}
     new_tl, results = timeline_ops.apply(tl, list(ops)[:200], "user", assets, bool(req.body.get("autoPin", True)))
     version = project["currentVersion"]
     if any(r["ok"] for r in results) and new_tl != tl:  # no-op edits (e.g. drop in place) create no version
@@ -826,14 +828,8 @@ def export_project(req: Request):
     fmt = req.query.get("format", "otio")
     if fmt not in export.FORMATS:
         raise BadRequest(f"format must be one of {sorted(export.FORMATS)}")
-    tl = projects.load_timeline(project)
-    ids = {i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
-    assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids)
-              if acl.effective_role(req.principal, a)}
-    fn, ctype, ext = export.FORMATS[fmt]
     audit(req.principal, "project.export", f"PROJ#{project['projectId']}", {"format": fmt})
-    return {"filename": f"{(tl.get('meta', {}).get('title') or project.get('title') or 'project')[:60]}.{ext}",
-            "contentType": ctype, "content": fn(tl, assets, project.get("title") or "Shorts")}
+    return export.export_project(req.principal, project, fmt)
 
 
 @router.route("GET", "/projects/{projectId}/versions")

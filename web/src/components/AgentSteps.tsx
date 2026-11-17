@@ -38,6 +38,14 @@ export const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
   estimate_generation: { ko: '생성 비용 추정', en: 'Estimating generation' },
   generate_media: { ko: '미디어 생성', en: 'Generating media' },
   list_generation_jobs: { ko: '생성 작업 확인', en: 'Checking generation jobs' },
+  analyze_audio: { ko: '오디오 분석', en: 'Analyzing audio' },
+  preview_frames: { ko: '결과 화면 확인', en: 'Checking rendered frames' },
+  render_video: { ko: '영상 렌더링 시작', en: 'Starting a render' },
+  list_renders: { ko: '렌더 목록 확인', en: 'Checking renders' },
+  list_versions: { ko: '버전 목록', en: 'Listing versions' },
+  restore_version: { ko: '버전 복원', en: 'Restoring a version' },
+  get_item: { ko: '항목 상세 확인', en: 'Reading an item' },
+  export_timeline: { ko: '편집 파일 내보내기', en: 'Exporting timeline' },
 };
 
 const MODEL_LABELS: Record<string, string> = {

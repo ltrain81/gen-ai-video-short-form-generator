@@ -6,6 +6,8 @@ export type AgentEvent =
   | { type: 'assistant.delta'; turn: string; text: string }
   | { type: 'tool'; turn: string; name: string; status: string; error?: string; summary?: string; detail?: string; ms?: number }
   | { type: 'thought'; turn: string; text: string }
+  | { type: 'download'; url: string; filename: string }
+  | { type: 'render.requested'; renderId: string; quality: string }
   | { type: 'timeline.updated'; version: number; message?: string }
   | { type: 'question'; questionId: string; question: string; kind: 'text' | 'choice' | 'clips' | 'confirm' | 'range';
       options?: string[]; clips?: { assetId: string; startSec: number; endSec: number; label?: string }[];

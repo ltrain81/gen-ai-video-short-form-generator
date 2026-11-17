@@ -186,6 +186,17 @@ export default function ProjectPage() {
         });
         ensureMedia(widgetAssetIds(e.spec));
         break;
+      case 'download': {
+        const ev = e as unknown as { url: string; filename: string };
+        const a = document.createElement('a');
+        a.href = ev.url; a.download = ev.filename; a.rel = 'noopener'; a.click();
+        notify('success', `${t('downloadReady')}: ${ev.filename}`);
+        break;
+      }
+      case 'render.requested':
+        setRenderKey((k) => k + 1);
+        setRendersOpen(true);
+        break;
       case 'timeline.updated':
         loadProject().catch(() => undefined);
         break;

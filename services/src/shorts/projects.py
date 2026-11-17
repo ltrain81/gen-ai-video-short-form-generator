@@ -20,11 +20,15 @@ ASPECTS = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080), "4:5
 
 
 def empty_timeline(timeline_id: str, project_id: str, aspect: str = "9:16") -> dict:
-    w, h = ASPECTS.get(aspect, ASPECTS["9:16"])
+    from . import timeline_ops
+    try:
+        aspect, w, h = timeline_ops._canvas_for(aspect, {})
+    except timeline_ops.OpError:
+        aspect, (w, h) = "9:16", ASPECTS["9:16"]
     return {
         "version": 1, "id": timeline_id, "projectId": project_id,
         "settings": {"aspect": aspect, "width": w, "height": h, "fps": 30, "background": "#000000", "loudness": -14,
-                     "safeZone": "shorts" if aspect == "9:16" else "none"},
+                     "safeZone": "shorts" if w < h else "none"},
         "tracks": [
             {"id": "v1", "kind": "video", "name": "Video", "items": [], "audioRole": "dialogue"},
             {"id": "o1", "kind": "overlay", "name": "B-roll", "items": []},

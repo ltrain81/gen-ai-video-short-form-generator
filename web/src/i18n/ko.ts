@@ -367,5 +367,7 @@ export const ko = {
   trackKind_overlay: "영상/이미지 레이어",
   trackKind_text: "텍스트·도형",
   trackKind_caption: "자막",
-  trackKind_audio: "오디오"
+  trackKind_audio: "오디오",
+  magneticTrack: "자석 트랙 (빈틈 없이 붙이기) 켜기/끄기",
+  downloadReady: "다운로드 준비됨"
 };

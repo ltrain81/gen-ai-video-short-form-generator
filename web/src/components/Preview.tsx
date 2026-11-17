@@ -7,6 +7,7 @@ import { sampleKeyframes, timelineDuration } from '@shorts/timeline';
 import { CSSProperties, PointerEvent as RPointerEvent, WheelEvent as RWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetMedia } from '../api/types';
 import { useI18n } from '../i18n';
+import { fadeMul, itemMotion, kfAt, srcAt } from '../kf';
 import { fmtTime } from '../util';
 
 /**
@@ -61,10 +62,21 @@ function activeAt(items: Item[], t: number): Item | undefined {
 }
 
 function srcTime(c: ClipItem, t: number): number {
-  const rel = (t - c.start) * (c.speed ?? 1);
-  if (c.mode === 'freeze') return c.srcIn;
-  if (c.mode === 'reverse') return Math.max(c.srcIn, c.srcOut - rel);
-  return c.srcIn + rel;
+  return srcAt(c, t - c.start);
+}
+
+/** The layer as it is at time t: keyframes + transition motion/fades applied to transform/opacity. */
+function animatedLayer(o: ClipItem, t: number): ClipItem & { _anim?: boolean } {
+  const tf = { x: 0.5, y: 0.5, scale: 1, rotation: 0, ...(o.transform ?? {}) } as NonNullable<ClipItem['transform']>;
+  const m = itemMotion(o as unknown as Record<string, unknown>, { x: tf.x, y: tf.y, scale: tf.scale });
+  const u = t - o.start;
+  const anim = ['x', 'y', 'scale', 'rotation'].some((k) => m.kf[k]?.length);
+  if (!anim && !m.kf.opacity?.length && !m.fadeIn && !m.fadeOut) return o;
+  return {
+    ...o, _anim: anim,
+    transform: { ...tf, x: kfAt(m.kf.x, u, tf.x), y: kfAt(m.kf.y, u, tf.y), scale: kfAt(m.kf.scale, u, tf.scale), rotation: kfAt(m.kf.rotation, u, tf.rotation ?? 0) },
+    opacity: (o.opacity ?? 1) * kfAt(m.kf.opacity, u, 1) * fadeMul(m, u, o.duration),
+  };
 }
 
 type Fx = { type: string; [k: string]: unknown };
@@ -116,7 +128,7 @@ function LayerVideo({ item, time, playing, url, style, muted = true }: { item: C
       el.addEventListener('loadedmetadata', () => { el.currentTime = Number(el.dataset.want ?? want); }, { once: true });
     }
     el.dataset.want = String(want);
-    const still = item.mode === 'freeze' || item.mode === 'reverse';
+    const still = item.mode === 'freeze' || item.mode === 'reverse' || !!item.speedCurve?.length;
     if (Math.abs(el.currentTime - want) > (playing && !still ? 0.35 : 0.04)) el.currentTime = want;
     el.playbackRate = item.speed ?? 1;
     el.volume = Math.min(1, Math.max(0, item.volume ?? 0));
@@ -161,6 +173,14 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain', t = c.sta
   const contain = f.layout === 'fit_blur' || f.layout === 'letterbox' || f.layout === 'split' || fit === 'contain'
     || (f.layout === 'box' && r.fit === 'contain');
   const tf = main ? tfCss(asObj(c.transform)) : {};
+  let kz = '';
+  if (main && c.keyframes) {
+    const u = t - c.start;
+    const z = Math.max(1, kfAt(c.keyframes.scale, u, 1));
+    const kx = kfAt(c.keyframes.x, u, 0.5), ky = kfAt(c.keyframes.y, u, 0.5), kr = kfAt(c.keyframes.rotation, u, 0);
+    if (z !== 1 || kx !== 0.5 || ky !== 0.5) kz += ` translate(${(0.5 - kx) * (z - 1) * 100}%, ${(0.5 - ky) * (z - 1) * 100}%) scale(${z})`;
+    if (kr) kz += ` rotate(${kr}deg)`;
+  }
   const geom: CSSProperties = f.layout === 'box'
     ? { left: `${(r.box?.x ?? 0) * 100}%`, top: `${(r.box?.y ?? 0) * 100}%`, width: `${(r.box?.w ?? 1) * 100}%`, height: `${(r.box?.h ?? 1) * 100}%` }
     : { inset: 0, width: '100%', height: '100%' };
@@ -168,7 +188,7 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain', t = c.sta
     position: 'absolute', ...geom,
     objectFit: contain ? 'contain' : 'cover',
     objectPosition: `${(f.x * 100).toFixed(1)}% ${(f.y * 100).toFixed(1)}%`,
-    transform: [`scale(${f.scale})`, tf.transform].filter(Boolean).join(' '), transformOrigin: `${f.x * 100}% ${f.y * 100}%`, opacity,
+    transform: [`scale(${f.scale})`, tf.transform, kz].filter(Boolean).join(' '), transformOrigin: `${f.x * 100}% ${f.y * 100}%`, opacity,
     filter: cssFilter(c.effects),
   };
 }
@@ -206,10 +226,11 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   // Every non-main video/overlay track is a layer (bottom → top in track order), like the renderer.
   const layers = tracks.map((tr, idx) => ({ tr, idx })).filter(({ tr }) => (tr.kind === 'overlay' || (tr.kind === 'video' && tr !== main)) && !tr.hidden);
   const activeLayers = layers.flatMap(({ tr, idx }) => tr.items.filter((i) => i.type === 'clip' && time >= i.start && time < i.start + i.duration)
-    .map((i) => ({ tr, idx, item: i as ClipItem })));
+    .map((i) => ({ tr, idx, item: animatedLayer(i as ClipItem, time) })));
   const isPip = (o: ClipItem) => {
     const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform) as Record<string, unknown>;
-    return Number(tf.scale ?? 1) < 0.999 || (o.mediaKind === 'image' && !!o.transform) || !!(tf.rotation || tf.crop || tf.flipH || tf.flipV);
+    return Number(tf.scale ?? 1) < 0.999 || (o.mediaKind === 'image' && !!o.transform) || !!(tf.rotation || tf.crop || tf.flipH || tf.flipV)
+      || !!(o as { _anim?: boolean })._anim;
   };
   const zOf = new Map<string, number>(tracks.flatMap((tr, idx) => tr.items.map((i) => [i.id, 2 + idx * 2] as [string, number])));
   const texts = tracks.filter((t) => t.kind === 'text' && !t.hidden).flatMap((t) => t.items).filter((i) => i.type === 'text') as TextItem[];
@@ -251,7 +272,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     }
     el.dataset.want = String(want);
     if (el.readyState === 0 && el.networkState !== el.NETWORK_LOADING) el.load();
-    const still = c.mode === 'freeze' || c.mode === 'reverse'; // reverse is scrubbed frame by frame
+    const still = c.mode === 'freeze' || c.mode === 'reverse' || !!c.speedCurve?.length; // scrubbed frame by frame
     if (Math.abs(el.currentTime - want) > (playing && !still ? 0.35 : 0.04)) el.currentTime = want;
     el.playbackRate = c.speed ?? 1;
     el.volume = Math.min(1, Math.max(0, c.volume ?? 1));
@@ -513,13 +534,17 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
           ))}
           <audio ref={musicRef} preload="auto" />
           {shapes.filter((g) => time >= g.start && time < g.start + g.duration).map((g) => {
-            const b = g.box ?? { x: 0, y: 0, w: 0.1, h: 0.1 };
+            const b0 = g.box ?? { x: 0, y: 0, w: 0.1, h: 0.1 };
+            const gm = itemMotion(g as unknown as Record<string, unknown>, { x: b0.x, y: b0.y, opacity: 1 });
+            const gu = time - g.start;
+            const b = { ...b0, x: kfAt(gm.kf.x, gu, b0.x), y: kfAt(gm.kf.y, gu, b0.y) };
+            const gOp = (g.opacity ?? 1) * kfAt(gm.kf.opacity, gu, 1) * fadeMul(gm, gu, g.duration);
             const pxW = b.w * stageW, pxH = b.h * stageH;
             const prog = g.shape === 'progressBar' ? Math.min(1, (time - g.start) / Math.max(0.01, g.duration)) : 1;
             return (
               <div key={g.id} onClick={(e) => { e.stopPropagation(); onSelect?.(g as unknown as Item, undefined); }}
                 style={{ position: 'absolute', left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * prog * 100}%`, height: `${b.h * 100}%`,
-                  background: g.fill ?? '#000', opacity: g.opacity ?? 1, zIndex: zOf.get(g.id), boxSizing: 'border-box',
+                  background: g.fill ?? '#000', opacity: gOp, zIndex: zOf.get(g.id), boxSizing: 'border-box',
                   border: g.stroke?.width ? `${g.stroke.width * height * scale}px solid ${g.stroke.color}` : undefined,
                   borderRadius: g.shape === 'ellipse' ? '50%' : g.shape === 'roundRect' ? Math.min(pxW, pxH) / 2 * (g.radius ?? 0.25) : 0,
                   outline: selectedId === g.id ? '2px dashed #22d3ee' : undefined }} />
@@ -528,6 +553,12 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
           {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x0) => {
             const x = { ...x0, position: asPos(x0.position, 0.2), style: { size: 0.05, weight: 800, color: '#FFFFFF', ...asObj<TextItem['style']>(x0.style) } as TextItem['style'] };
             const anim = textAnim(x0, time - x0.start, height);
+            const rot0 = Number((x0 as unknown as { rotation?: number }).rotation ?? 0);
+            const mo = itemMotion(x0 as unknown as Record<string, unknown>, { x: x.position.x ?? 0.5, y: x.position.y ?? 0.2, scale: 1, rotation: rot0 });
+            const uu = time - x0.start;
+            const kx = kfAt(mo.kf.x, uu, x.position.x ?? 0.5), ky = kfAt(mo.kf.y, uu, x.position.y ?? 0.2);
+            const ks = kfAt(mo.kf.scale, uu, 1), kr = kfAt(mo.kf.rotation, uu, rot0);
+            const ko = kfAt(mo.kf.opacity, uu, 1) * fadeMul(mo, uu, x0.duration);
             const anchorY = (x.position as { anchor?: string }).anchor === 'top' ? '0%' : (x.position as { anchor?: string }).anchor === 'bottom' ? '-100%' : '-50%';
             const shown = anim.reveal != null && editingId !== x.id
               ? ((x0.animation as { in?: string } | undefined)?.in === 'typewriter'
@@ -538,9 +569,9 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
             <div key={x.id} onPointerDown={(e) => beginDrag(e, x0, 'text', 'move')} onDoubleClick={() => startEdit(x0)}
               title={canEdit ? '드래그: 이동 · 더블클릭: 글자 수정 / Drag: move · Double-click: edit' : undefined}
               style={{ cursor: canEdit ? (editingId === x.id ? 'text' : 'move') : 'pointer', touchAction: 'none', zIndex: zOf.get(x.id),
-              opacity: anim.opacity * (x0.opacity ?? 1),
-              position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`,
-              transform: `translate(-50%, ${anchorY}) translateY(${anim.dy * scale}px) scale(${anim.scale}) rotate(${Number((x0 as unknown as { rotation?: number }).rotation ?? 0)}deg)`,
+              opacity: anim.opacity * (x0.opacity ?? 1) * ko,
+              position: 'absolute', left: `${kx * 100}%`, top: `${ky * 100}%`,
+              transform: `translate(-50%, ${anchorY}) translateY(${anim.dy * scale}px) scale(${anim.scale * ks}) rotate(${kr}deg)`,
               fontStyle: (x.style as { italic?: boolean }).italic ? 'italic' : undefined,
               letterSpacing: (x.style as { letterSpacing?: number }).letterSpacing != null ? `${(x.style as { letterSpacing?: number }).letterSpacing}em` : undefined,
               textShadow: x.style.shadow ? `${x.style.shadow.x * height * scale / 400}px ${x.style.shadow.y * height * scale / 400}px ${x.style.shadow.blur}px ${x.style.shadow.color}` : undefined,
@@ -580,9 +611,15 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
               textShadow: c.style.shadow ? `${c.style.shadow.x}px ${c.style.shadow.y}px ${c.style.shadow.blur}px ${c.style.shadow.color}` : undefined,
             }}>
               <span style={{ background: c.style.background, padding: c.style.background ? '0.1em 0.35em' : 0, borderRadius: 6 }}>
-                {c.words.map((w, i) => (
-                  <span key={i} style={{ color: c.style.highlightColor && time >= w.s && time < w.e ? c.style.highlightColor : undefined }}>{w.w} </span>
-                ))}
+                {c.words.map((w, i) => {
+                  const on = time >= w.s && time < w.e;
+                  const wa = (c.style as { wordAnim?: string }).wordAnim ?? (c0.preset === 'pop' ? 'pop' : undefined);
+                  const p = Math.min(1, (time - w.s) / 0.14);
+                  const sc = !on || !wa ? 1 : wa === 'pop' ? 1.25 - 0.25 * p : wa === 'grow' ? 1 + 0.15 * Math.min(1, (time - w.s) / 0.16) : 1;
+                  const sy = on && wa === 'bounce' ? 1.3 - 0.3 * Math.min(1, (time - w.s) / 0.12) : 1;
+                  return <span key={i} style={{ display: 'inline-block', transform: sc !== 1 || sy !== 1 ? `scale(${sc}, ${sc * sy})` : undefined,
+                    color: c.style.highlightColor && on ? c.style.highlightColor : undefined }}>{w.w}&nbsp;</span>;
+                })}
               </span>
               {handles(c0, 'caption')}
             </div>

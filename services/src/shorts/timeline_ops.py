@@ -70,21 +70,84 @@ def _guard(tl: dict, path: str, actor: str) -> None:
         raise OpError(f"'{path}' is pinned by the user")
 
 
+SPEED_CHUNK = 0.25  # source seconds per constant-speed chunk when approximating a speed ramp
+
+
+def _kf_value(kfs: list[dict], t: float, default: float) -> float:
+    pts = sorted((k for k in kfs if isinstance(k, dict) and "t" in k and "v" in k), key=lambda k: float(k["t"]))
+    if not pts:
+        return default
+    if t <= float(pts[0]["t"]):
+        return float(pts[0]["v"])
+    for a, b in zip(pts, pts[1:]):
+        ta, tb = float(a["t"]), float(b["t"])
+        if t <= tb:
+            if a.get("ease") == "hold" or tb <= ta:
+                return float(a["v"])
+            u = (t - ta) / (tb - ta)
+            return float(a["v"]) + (float(b["v"]) - float(a["v"])) * u
+    return float(pts[-1]["v"])
+
+
+def speed_chunks(it: dict) -> list[tuple[float, float, float]]:
+    """(srcA, srcB, speed) pieces of a clip. `speedCurve` keyframes: t = source seconds after srcIn, v = speed
+    (0.1–16, linear between keys; ease 'hold' = step). Without a curve: one piece at `speed`."""
+    a, b = float(it.get("srcIn", 0)), float(it.get("srcOut", 0))
+    curve = it.get("speedCurve") or []
+    if not curve or b <= a:
+        return [(a, b, max(0.05, float(it.get("speed") or 1)))]
+    out, t = [], a
+    while t < b - 1e-6:
+        e = min(b, t + SPEED_CHUNK)
+        v = _kf_value(curve, (t + e) / 2 - a, float(it.get("speed") or 1))
+        out.append((t, e, max(0.1, min(16.0, v))))
+        t = e
+    return out
+
+
+def src_at(it: dict, rel: float) -> float:
+    """Source time shown `rel` seconds after the item starts (speed, speed ramps, reverse, freeze)."""
+    a, b = float(it.get("srcIn", 0)), float(it.get("srcOut", 0))
+    mode = it.get("mode") or "normal"
+    if mode == "freeze":
+        return a
+    t_out, src = 0.0, a
+    for x, y, sp in speed_chunks(it):
+        seg = (y - x) / sp
+        if rel <= t_out + seg:
+            src = x + (rel - t_out) * sp
+            break
+        t_out += seg
+        src = y
+    return (a + b - src) if mode == "reverse" else src
+
+
 def clip_duration(it: dict) -> float:
     if it.get("type") == "clip" and it.get("mediaKind") in {"video", "audio"}:
-        return max(MIN_DURATION, (it["srcOut"] - it["srcIn"]) / float(it.get("speed") or 1))
+        if it.get("mode") == "freeze":
+            return max(MIN_DURATION, float(it.get("duration") or (it["srcOut"] - it["srcIn"])))
+        return max(MIN_DURATION, sum((y - x) / s for x, y, s in speed_chunks(it)))
     return max(MIN_DURATION, float(it.get("duration", DEFAULT_IMAGE_SEC)))
 
 
+def is_magnetic(tr: dict) -> bool:
+    return tr.get("magnetic", True) is not False
+
+
 def relayout(tl: dict) -> None:
-    """Magnetic main track: recompute starts/durations back-to-back."""
+    """Magnetic main track: recompute starts/durations back-to-back. A main track with magnetic=false keeps each
+    item's start (gaps show the canvas background)."""
+    main = main_track(tl)
     t = 0.0
-    for it in main_track(tl)["items"]:
+    for it in main["items"]:
         it["duration"] = round(clip_duration(it), 4)
-        it["start"] = round(t, 4)
-        t += it["duration"]
+        if is_magnetic(main):
+            it["start"] = round(t, 4)
+            t += it["duration"]
+    if not is_magnetic(main):
+        main["items"].sort(key=lambda x: float(x.get("start", 0)))
     for tr in tl["tracks"]:
-        if tr["kind"] != "video":
+        if tr["kind"] != "video" or tr is not main:
             for it in tr["items"]:
                 if it.get("type") == "clip" and it.get("mediaKind") in {"video", "audio"}:
                     it["duration"] = round(clip_duration(it), 4)
@@ -97,6 +160,7 @@ def duration(tl: dict) -> float:
 
 # ------------------------------------------------------------------ ops
 def op_add_clip(tl: dict, op: dict, actor: str, assets: dict) -> dict:
+    _check_effect_assets(op.get("effects"), assets)
     asset = assets.get(op["assetId"])
     if not asset:
         raise OpError(f"Asset {op['assetId']} not accessible")
@@ -124,8 +188,11 @@ def op_add_clip(tl: dict, op: dict, actor: str, assets: dict) -> dict:
         item.update(srcIn=0, srcOut=0, duration=float(op.get("duration", DEFAULT_IMAGE_SEC)))
         if kind == "document":
             item["page"] = int(op.get("page", 0))
-        item["kenBurns"] = op.get("kenBurns") or {"from": {"x": 0.5, "y": 0.5, "scale": 1.0},
-                                                   "to": {"x": 0.5, "y": 0.5, "scale": 1.08}}
+        if "kenBurns" in op and not op["kenBurns"]:
+            item["kenBurns"] = {"from": {"x": 0.5, "y": 0.5, "scale": 1.0}, "to": {"x": 0.5, "y": 0.5, "scale": 1.0}}
+        else:
+            item["kenBurns"] = op.get("kenBurns") or {"from": {"x": 0.5, "y": 0.5, "scale": 1.0},
+                                                       "to": {"x": 0.5, "y": 0.5, "scale": 1.08}}
     for k in ("transform", "volume", "fadeIn", "fadeOut", "transitionIn", "transitionOut", "effects", "reframe",
               "opacity"):
         if k in op:
@@ -137,11 +204,12 @@ def op_add_clip(tl: dict, op: dict, actor: str, assets: dict) -> dict:
         item.setdefault("transform", {"x": 0.5, "y": 0.5, "scale": 1, "rotation": 0, "fit": "cover"})
     item["provenance"] = {"by": actor, **({"reason": op["reason"]} if op.get("reason") else {}),
                           **({"analysisRef": op["analysisRef"]} if op.get("analysisRef") else {})}
-    if tr["kind"] == "video":
+    if tr["kind"] == "video" and tr is main_track(tl) and is_magnetic(tr):
         at = op.get("index")
         tr["items"].insert(len(tr["items"]) if at is None else int(at), item)
     else:
-        item["start"] = round(float(op.get("start", 0)), 4)
+        default = max([i["start"] + i["duration"] for i in tr["items"]] or [0.0]) if tr["kind"] == "video" else 0.0
+        item["start"] = round(float(op.get("start", default)), 4)
         tr["items"].append(item)
     return {"itemId": item["id"]}
 
@@ -208,8 +276,12 @@ def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     if dest["kind"] not in ok.get(it.get("type"), {dest["kind"]}):
         raise OpError(f"A {it.get('type')} cannot go on a {dest['kind']} track")
     tr["items"].pop(idx)
-    if dest["kind"] == "video":
+    if dest["kind"] == "video" and dest is main_track(tl) and is_magnetic(dest) and "start" not in op:
         dest["items"].insert(min(int(op.get("index", len(dest["items"]))), len(dest["items"])), it)
+    elif dest["kind"] == "video" and dest is main_track(tl) and is_magnetic(dest):
+        # magnetic main track: a start time becomes an insertion index
+        at = float(op["start"])
+        dest["items"].insert(sum(1 for x in dest["items"] if x["start"] + x["duration"] / 2 < at), it)
     else:
         new_start = round(float(op.get("start", it["start"])), 4)
         retime_caption(it, new_start, float(it["duration"]))
@@ -221,11 +293,11 @@ def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
 UPDATABLE = {"transform", "reframe", "kenBurns", "volume", "fadeIn", "fadeOut", "effects", "keyframes", "opacity",
              "transitionIn", "transitionOut", "speed", "speedCurve", "mode", "text", "style", "position", "animation",
              "role", "preset", "start", "duration", "page", "fill", "box", "words", "stroke", "shape", "radius",
-             "progress", "assetId", "srcIn", "srcOut"}
+             "progress", "assetId", "srcIn", "srcOut", "rotation"}
 
 
 TRACK_KINDS = {"video", "overlay", "text", "caption", "audio"}
-TRACK_PROPS = {"name", "hidden", "muted", "locked", "volume", "audioRole"}
+TRACK_PROPS = {"name", "hidden", "muted", "locked", "volume", "audioRole", "magnetic"}
 TRACK_PREFIX = {"video": "v", "overlay": "o", "text": "t", "caption": "c", "audio": "a"}
 
 
@@ -401,8 +473,35 @@ def retime_caption(it: dict, start: float, duration: float) -> None:
                    for w in it.get("words", [])]
 
 
+def asset_refs(op: dict) -> set[str]:
+    """Every asset an op references (clip media, LUT files inside effects, brand-kit assets)."""
+    ids: set[str] = set()
+    if op.get("assetId"):
+        ids.add(str(op["assetId"]))
+    for src in (op, op.get("set") or {}):
+        for e in (src.get("effects") or []) if isinstance(src.get("effects"), list) else []:
+            if isinstance(e, dict) and e.get("assetId"):
+                ids.add(str(e["assetId"]))
+        if isinstance(src.get("assetId"), str):
+            ids.add(src["assetId"])
+    kit = op.get("kit") if isinstance(op.get("kit"), dict) else {}
+    ids |= {str(kit[k]) for k in ("logoAssetId", "introAssetId", "outroAssetId") if kit.get(k)}
+    return ids
+
+
+def _check_effect_assets(effects: Any, assets: dict) -> None:
+    for e in effects or []:
+        if isinstance(e, dict) and e.get("type") == "lut":
+            if not e.get("assetId") or e["assetId"] not in assets:
+                raise OpError("lut effect needs an accessible assetId (an uploaded .cube file)")
+
+
 def op_update(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     _, it, _ = find_item(tl, op["itemId"])
+    if "effects" in (op.get("set") or {}):
+        _check_effect_assets(op["set"]["effects"], _assets)
+    if (op.get("set") or {}).get("assetId") and op["set"]["assetId"] not in _assets:
+        raise OpError(f"Asset {op['set']['assetId']} not accessible")
     changed = []
     st = op.get("set") or {}
     if it.get("type") == "caption" and ("start" in st or "duration" in st) and "words" not in st:
@@ -456,8 +555,9 @@ def op_captions(tl: dict, op: dict, actor: str, assets: dict) -> dict:
     transcripts: dict = op.get("transcripts") or {}
     max_words = int(op.get("maxWordsPerLine", 4 if tl["settings"]["aspect"] == "9:16" else 8))
     words_out: list[dict] = []
-    for it in main_track(tl)["items"]:
-        if it.get("type") != "clip" or it.get("mediaKind") != "video":
+    src_track = track(tl, op["source"]) if op.get("source") and op["source"] != "main" else main_track(tl)
+    for it in sorted(src_track["items"], key=lambda x: x["start"]):
+        if it.get("type") != "clip" or it.get("mediaKind") not in {"video", "audio"}:
             continue
         speed = float(it.get("speed") or 1)
         for w in (transcripts.get(it["assetId"]) or {}).get("words", []):

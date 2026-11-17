@@ -133,7 +133,8 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
   const dragDelta = (d: Drag) => {
     const raw = d.dx / pps;
     const i = d.item;
-    if (d.kind === 'move') return d.trackKind === 'video' ? { delta: raw } : snapTo([i.start, i.start + i.duration], raw);
+    const magnetic = d.trackKind === 'video' && (timeline.tracks.find((x) => x.id === d.trackId) as { magnetic?: boolean } | undefined)?.magnetic !== false;
+    if (d.kind === 'move') return magnetic ? { delta: raw } : snapTo([i.start, i.start + i.duration], raw);
     if (d.kind === 'trimL') return snapTo([i.start], raw);
     return snapTo([i.start + i.duration], raw);
   };
@@ -159,8 +160,9 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
     setDrag(null);
     if (Math.abs(drag.dx) < 3) return;
     if (drag.kind === 'move') {
-      if (drag.trackKind === 'video') {
-        const tr = timeline.tracks.find((x) => x.id === drag.trackId)!;
+      const trD = timeline.tracks.find((x) => x.id === drag.trackId)!;
+      if (drag.trackKind === 'video' && (trD as { magnetic?: boolean }).magnetic !== false) {
+        const tr = trD;
         const target = i.start + d + i.duration / 2;
         const others = tr.items.filter((x) => x.id !== i.id);
         onOps([{ op: 'move', itemId: i.id, index: others.filter((x) => x.start + x.duration / 2 < target).length }], 'reorder');
@@ -243,6 +245,10 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
               {editable && onOps && (
                 <span className="tl-trackbtns">
                   <button type="button" title={t('hideTrack')} onClick={() => onOps([{ op: 'update_track', trackId: tr.id, set: { hidden: !tr.hidden } }], 'track visibility')}>{tr.hidden ? '◌' : '●'}</button>
+                  {tr.kind === 'video' && tr === timeline.tracks.find((x) => x.kind === 'video') && (
+                    <button type="button" title={t('magneticTrack')} onClick={() => onOps([{ op: 'update_track', trackId: tr.id, set: { magnetic: (tr as { magnetic?: boolean }).magnetic === false } }], 'magnetic')}>
+                      {(tr as { magnetic?: boolean }).magnetic === false ? '⇿' : '🧲'}</button>
+                  )}
                   {(tr.kind === 'audio' || tr.kind === 'video' || tr.kind === 'overlay') && (
                     <button type="button" title={t('muteTrack')} onClick={() => onOps([{ op: 'update_track', trackId: tr.id, set: { muted: !tr.muted } }], 'track mute')}>{tr.muted ? '🔇' : '🔊'}</button>
                   )}
