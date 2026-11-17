@@ -290,5 +290,20 @@ export const ko = {
   wSkipped: "(건너뜀)",
   wClips: "{n}개 클립",
   wReordered: "순서 변경",
-  wEdited: "수정함"
+  wEdited: "수정함",
+  safeZone: "안전 영역",
+  safeZoneLabel: "안전 영역 · SNS 화면 UI에 가려지지 않는 범위",
+  thinking: "생각하는 중",
+  stepsSummary: "작업 {n}단계 · 도구 {s}",
+  agentSettings: "AI 설정",
+  agentModel: "모델",
+  agentEffort: "생각 깊이",
+  agentSettingsSaved: "다음 메시지부터 적용됩니다",
+  tier_best: "최고 품질",
+  tier_balanced: "균형",
+  tier_fast: "빠름",
+  effort_low: "낮음 (빠름)",
+  effort_medium: "보통",
+  effort_high: "높음",
+  effort_xhigh: "매우 높음 (느림)"
 };

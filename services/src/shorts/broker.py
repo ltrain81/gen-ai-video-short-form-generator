@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import bindings, ddb, events, ingest, projects
+from . import bindings, ddb, events, ingest, projects, steps
 from .auth import Principal, load_principal
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,8 @@ def save_message(project_id: str, role: str, text: str, **extra) -> dict:
 
 def messages(project_id: str, limit: int = 200) -> list[dict]:
     items = ddb.query(f"PROJ#{project_id}", "MSG#", forward=False, limit=limit)
-    return [{k: i.get(k) for k in ("role", "text", "createdAt", "tools", "questionId", "selection", "error")}
+    return [{k: i.get(k) for k in ("role", "text", "createdAt", "tools", "steps", "model", "effort", "questionId",
+                                   "selection", "error")}
             for i in reversed(items)]
 
 
@@ -111,6 +112,30 @@ class Relay:
         self.text = ""
         self.last = time.time()
         self.tools: list[dict] = []
+        self.steps: list[dict] = []  # ordered: {kind: tool|thought, ...} — persisted for transparency
+        self._started: dict[str, float] = {}
+        self.model: str | None = None
+        self.effort: str | None = None
+
+    def thought(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        step = {"kind": "thought", "text": text[:1500]}
+        self.steps.append(step)
+        self.emit({"type": "thought", "text": step["text"]})
+
+    def tool_started(self, key: str, name: str, args) -> None:
+        self._started[key] = time.time()
+        self.emit({"type": "tool", "name": name, "status": "in_progress", "summary": steps.summarize(name, args)})
+
+    def tool_done(self, key: str, name: str, args, output, status: str, error=None) -> None:
+        ms = int((time.time() - self._started.pop(key, time.time())) * 1000)
+        step = {"kind": "tool", "name": name, "status": status, "summary": steps.summarize(name, args, output),
+                "detail": steps.detail(args), "ms": ms, **({"error": str(error)[:300]} if error else {})}
+        self.steps.append(step)
+        self.tools.append({"name": name, "status": status})
+        self.emit({"type": "tool", **{k: v for k, v in step.items() if k != "kind"}})
 
     def delta(self, s: str) -> None:
         self.buf += s
@@ -129,34 +154,62 @@ class Relay:
         events.publish(self.chan, [{"turn": self.turn, **e}])
 
 
+def agent_settings(project: dict) -> tuple[str, str]:
+    model = project.get("agentModel") or _env("BMA_MODEL_ID", "openai.gpt-6.1-sol")
+    effort = project.get("agentEffort") or os.environ.get("BMA_REASONING_EFFORT", "high")
+    return model, effort
+
+
+def recap(project_id: str, limit: int = 12) -> str:
+    """Short transcript for a fresh session (old sessions expire on the service side)."""
+    msgs = messages(project_id, limit=limit)[:-1]  # the current user message is sent separately
+    if not msgs:
+        return ""
+    lines = [f"{m['role']}: {(m.get('text') or '').strip()[:400]}" for m in msgs if (m.get("text") or "").strip()]
+    return ("\n[Earlier in this project's chat (your previous session ended; continue from here):\n"
+            + "\n".join(lines[-limit:]) + "\n]")
+
+
 def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> None:
     client = _openai_client()
     sessions = client.beta.agents.sessions
     agent_state = project.get("agent") or {}
+    model, effort = agent_settings(project)
+    relay.model, relay.effort = model, effort
     sid = agent_state.get("sessionId") if agent_state.get("backend") == "bma" else None
+    if sid and (agent_state.get("model"), agent_state.get("effort")) != (model, effort):
+        sid = None  # settings changed → new session (with a recap)
+    stream = None
     if sid:
         try:
             s = sessions.retrieve(sid).model_dump(mode="json", warnings=False)
-            if s.get("status") == "failed":
-                sid = None
-        except Exception:  # noqa: BLE001 - expired/deleted session → start a new one
-            sid = None
-    if sid:
-        stream = sessions.events.stream(sid, extra_query={"stream": "true"})
-        sessions.events.create(sid, events=[{"type": "agent.session.input.message", "input": [
-            {"role": "user", "content": [{"type": "input_text", "text": user_input}]}]}])
-        bindings.refresh("bma", agent_state["environmentId"])
-    else:
+            if s.get("status") in {"failed", "expired", "terminated", "cancelled", "deleted"}:
+                raise RuntimeError(f"session {s.get('status')}")
+            stream = sessions.events.stream(sid, extra_query={"stream": "true"})
+            sessions.events.create(sid, events=[{"type": "agent.session.input.message", "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": user_input}]}]}])
+            bindings.refresh("bma", agent_state["environmentId"])
+        except Exception:  # noqa: BLE001 - expired/broken session (the service answers 500) → start fresh
+            log.warning("Resuming BMA session %s failed; starting a new one", sid, exc_info=True)
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            stream, sid = None, None
+    if not sid:
         prior = "" if not project.get("currentVersion") else (
             "\n[Context: this project already has a timeline (version "
             f"{project['currentVersion']}); call get_context before changing it.]")
         stream = sessions.create(
-            agent={"model": _env("BMA_MODEL_ID", "openai.gpt-5.6-luna"), "instructions": _instructions(p),
-                   "tools": [_mcp_tool()]},
+            agent={"model": model, "instructions": _instructions(p), "tools": [_mcp_tool()],
+                   "reasoning": {"effort": effort, "summary": "auto"}},
             environment={"type": "aws_bedrock_agentcore", "runtime_arn": _env("BMA_RUNTIME_ARN"),
                          "runtime_qualifier": "DEFAULT", "workspace_directory": "/home/app/workspace",
                          "capability_directories": ["/opt/bma/plugins"]},
-            input=user_input + prior, stream=True, extra_body={"role_arn": _env("BMA_SESSION_ROLE_ARN")})
+            input=user_input + prior + recap(project["projectId"]), stream=True,
+            extra_body={"role_arn": _env("BMA_SESSION_ROLE_ARN")})
+    thinking: dict[str, str] = {}
     with stream:
         for ev in stream:
             d = ev.model_dump(mode="json", warnings=False)
@@ -170,17 +223,30 @@ def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> 
                         env_id = sessions.retrieve(sid).model_dump(mode="json")["environment"]["id"]
                     bindings.bind("bma", env_id, p, project["projectId"], sid)
                     ddb.update(f"PROJ#{project['projectId']}", "META", {"agent": {
-                        "backend": "bma", "sessionId": sid, "environmentId": env_id}})
+                        "backend": "bma", "sessionId": sid, "environmentId": env_id, "model": model, "effort": effort}})
             if kind.endswith("output_text.delta"):
                 relay.delta(d.get("delta", ""))
+            elif kind.endswith("reasoning_summary_text.delta"):
+                key = str(d.get("item_id") or "r")
+                thinking[key] = thinking.get(key, "") + str(d.get("delta") or "")
+            elif kind.endswith("reasoning_summary_text.done"):
+                key = str(d.get("item_id") or "r")
+                relay.thought(d.get("text") or thinking.pop(key, ""))
+                thinking.pop(key, None)
             elif kind.endswith("turn.item.done") or kind.endswith("turn.item.added"):
                 item = d.get("item") or {}
                 if item.get("type") == "mcp_call":
-                    entry = {"type": "tool", "name": item.get("name"), "status": item.get("status"),
-                             "error": (item.get("error") or None)}
-                    if kind.endswith("done"):
-                        relay.tools.append({"name": item.get("name"), "status": item.get("status")})
-                    relay.emit(entry)
+                    key = str(item.get("id") or item.get("name"))
+                    if kind.endswith("added"):
+                        relay.tool_started(key, item.get("name"), item.get("arguments"))
+                    else:
+                        relay.tool_done(key, item.get("name"), item.get("arguments"), item.get("output"),
+                                        item.get("status") or "completed", item.get("error"))
+                elif item.get("type") == "reasoning" and kind.endswith("done"):
+                    texts = [x.get("text", "") for x in (item.get("summary") or []) if isinstance(x, dict)]
+                    if texts and not any(x.get("kind") == "thought" and x.get("text") == "\n".join(texts).strip()
+                                         for x in relay.steps[-3:]):
+                        relay.thought("\n".join(texts))
             elif kind.split(".")[-1] in {"completed", "failed", "cancelled"} and ".turn." in kind:
                 turn = d.get("turn") or {}
                 if turn.get("error"):
@@ -231,7 +297,8 @@ def run_turn(event: dict) -> None:
         _ensure_brand(p, project_id)
     finally:
         relay.flush()
-        save_message(project_id, "assistant", relay.text, tools=relay.tools or None, error=error, turn=turn)
+        save_message(project_id, "assistant", relay.text, tools=relay.tools or None, steps=relay.steps or None,
+                     model=relay.model, effort=relay.effort, error=error, turn=turn)
         agent = (ddb.get(f"PROJ#{project_id}", "META") or {}).get("agent") or {}
         if agent.get("environmentId"):
             projects.release_lock(project_id, f"agent:{agent['environmentId']}")

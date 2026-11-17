@@ -24,9 +24,11 @@ def _tools(ctx: agent_tools.ToolContext, relay) -> list:
 
     def make(name: str, spec: dict):
         def fn(tool_use, **_kw):
-            relay.emit({"type": "tool", "name": name, "status": "in_progress"})
+            key = str(tool_use.get("toolUseId") or name)
+            args = tool_use.get("input") or {}
+            relay.tool_started(key, name, args)
             try:
-                res = agent_tools.run(ctx, name, tool_use.get("input") or {})
+                res = agent_tools.run(ctx, name, args)
                 data = res.data
                 if res.images:
                     # Converse does not accept images inside tool results for this model family: describe them.
@@ -34,12 +36,10 @@ def _tools(ctx: agent_tools.ToolContext, relay) -> list:
                     data = {"result": data, "frames_description": models.describe_frames(
                         res.images, json.dumps(data, ensure_ascii=False, default=str)[:500])}
                 content = [{"text": json.dumps(data, ensure_ascii=False, default=str)}]
-                relay.tools.append({"name": name, "status": "completed"})
-                relay.emit({"type": "tool", "name": name, "status": "completed"})
+                relay.tool_done(key, name, args, data if not isinstance(data, (bytes, bytearray)) else None, "completed")
                 return {"toolUseId": tool_use["toolUseId"], "status": "success", "content": content}
             except Exception as exc:  # noqa: BLE001 - errors go back to the model
-                relay.tools.append({"name": name, "status": "failed"})
-                relay.emit({"type": "tool", "name": name, "status": "failed", "error": str(exc)[:300]})
+                relay.tool_done(key, name, args, None, "failed", exc)
                 return {"toolUseId": tool_use["toolUseId"], "status": "error", "content": [{"text": f"Error: {exc}"}]}
         return PythonAgentTool(name, {"name": name, "description": spec["description"],
                                       "inputSchema": {"json": spec["inputSchema"]}}, fn)
@@ -55,7 +55,8 @@ def run_turn(p: Principal, project: dict, user_input: str, relay) -> None:
     from .broker import _instructions
 
     ctx = agent_tools.ToolContext(principal=p, project_id=project["projectId"], holder=f"agent:strands:{project['projectId']}")
-    model = BedrockModel(model_id=os.environ.get("STRANDS_MODEL_ID", "us.openai.gpt-6.1-sol"),
+    relay.model = os.environ.get("STRANDS_MODEL_ID", "us.openai.gpt-6.1-sol")
+    model = BedrockModel(model_id=relay.model,
                          region_name=os.environ.get("AWS_REGION", "us-east-1"), max_tokens=8192)
     session = S3SessionManager(session_id=f"{project['projectId']}", bucket=get_config().media_bucket,
                                prefix=f"agent-sessions/{project['tenantId']}/")

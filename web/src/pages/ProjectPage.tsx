@@ -16,6 +16,7 @@ import { AgentEvent, subscribeProject } from '../api/realtime';
 import { uploadFile } from '../api/upload';
 import type { Asset, AssetMedia, ChatMessage, ChatWidgetHistory, ProjectSummary } from '../api/types';
 import { questionToWidget, widgetAssetIds } from '../components/ChatWidget';
+import { modelLabel } from '../components/AgentSteps';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
 import RendersModal from '../components/RendersModal';
@@ -30,7 +31,8 @@ import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 
 function fromHistory(m: ChatMessage[], widgets: ChatWidgetHistory[] = []): ChatEntry[] {
-  const out: ChatEntry[] = m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, error: x.error }));
+  const out: ChatEntry[] = m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, steps: x.steps as ChatEntry['steps'],
+    model: x.model, effort: x.effort, error: x.error }));
   // A widget belongs to the first assistant message saved after it (messages are saved at the end of a turn).
   for (const w of widgets) {
     const i = m.findIndex((x) => x.role === 'assistant' && x.createdAt >= w.createdAt);
@@ -60,6 +62,22 @@ export default function ProjectPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [project, setProject] = useState<ProjectSummary | null>(null);
+  const projectRef = useRef<ProjectSummary | null>(null);
+  projectRef.current = project;
+  const agentDefaults = useRef<{ model: string; effort: string } | null>(null);
+  const [agentModels, setAgentModels] = useState<{ id: string; label: string; tier: string }[]>([]);
+  const [agentEfforts, setAgentEfforts] = useState<string[]>([]);
+  useEffect(() => {
+    api.agentModels().then((r) => { agentDefaults.current = r.default; setAgentModels(r.models); setAgentEfforts(r.efforts); }).catch(() => undefined);
+  }, []);
+  const setAgent = async (patch: { agentModel?: string; agentEffort?: string }) => {
+    if (!project) return;
+    try {
+      await api.updateProject(projectId, patch);
+      setProject({ ...project, ...patch });
+      notify('success', t('agentSettingsSaved'));
+    } catch (err) { notify('error', (err as Error).message); }
+  };
   const [chatW, setChatW] = useState(() => clampChat(Number(localStorage.getItem('chatWidth')) || CHAT_DEFAULT));
   useEffect(() => { localStorage.setItem('chatWidth', String(chatW)); }, [chatW]);
   const startResize = (e: React.PointerEvent) => {
@@ -131,7 +149,8 @@ export default function ProjectPage() {
     switch (e.type) {
       case 'turn.started':
         setBusy(true);
-        setEntries((x) => x.some((m) => m.pending) ? x : [...x, { id: e.turn, role: 'assistant', text: '', pending: true, tools: [] }]);
+        setEntries((x) => x.some((m) => m.pending) ? x : [...x, { id: e.turn, role: 'assistant', text: '', pending: true, tools: [], steps: [],
+          model: projectRef.current?.agentModel ?? agentDefaults.current?.model, effort: projectRef.current?.agentEffort ?? agentDefaults.current?.effort }]);
         break;
       case 'assistant.delta':
         setEntries((x) => {
@@ -143,11 +162,16 @@ export default function ProjectPage() {
       case 'tool':
         setEntries((x) => x.map((m) => {
           if (!m.pending) return m;
-          const tools = [...(m.tools ?? [])];
-          const j = tools.findIndex((tt) => tt.name === e.name && tt.status === 'in_progress');
-          if (j >= 0) tools[j] = { name: e.name, status: e.status }; else tools.push({ name: e.name, status: e.status });
-          return { ...m, tools };
+          const steps = [...(m.steps ?? [])];
+          const j = steps.map((st) => st.kind === 'tool' && st.name === e.name && st.status === 'in_progress').lastIndexOf(true);
+          const step = { kind: 'tool' as const, name: e.name, status: e.status, summary: e.summary || (j >= 0 ? steps[j].summary : undefined),
+            detail: e.detail, ms: e.ms, error: e.error };
+          if (j >= 0 && e.status !== 'in_progress') steps[j] = step; else steps.push(step);
+          return { ...m, steps, tools: steps.filter((st) => st.kind === 'tool').map((st) => ({ name: st.name!, status: st.status! })) };
         }));
+        break;
+      case 'thought':
+        setEntries((x) => x.map((m) => (m.pending ? { ...m, steps: [...(m.steps ?? []), { kind: 'thought' as const, text: e.text }] } : m)));
         break;
       case 'question':
         setEntries((x) => x.map((m) => (m.pending ? { ...m, question: e } : m)));
@@ -506,7 +530,21 @@ export default function ProjectPage() {
           suggestions={suggestions} selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)}
           header={
             <div style={{ padding: '14px 20px', borderBottom: divider }}>
-              <Box variant="h3" padding="n">{project.title}</Box>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}><Box variant="h3" padding="n">{project.title}</Box></div>
+                {agentModels.length > 0 && (
+                  <ButtonDropdown expandToViewport variant="inline-icon" ariaLabel={t('agentSettings')} items={[
+                    { id: 'm', text: t('agentModel'), items: agentModels.map((m) => ({ id: `model:${m.id}`, text: m.label,
+                      description: t(`tier_${m.tier}` as never), checked: (project.agentModel ?? agentDefaults.current?.model) === m.id, itemType: 'checkbox' as const })) },
+                    { id: 'e', text: t('agentEffort'), items: agentEfforts.map((ef) => ({ id: `effort:${ef}`, text: t(`effort_${ef}` as never),
+                      checked: (project.agentEffort ?? agentDefaults.current?.effort) === ef, itemType: 'checkbox' as const })) },
+                  ]} onItemClick={({ detail }) => {
+                    const [k, v] = detail.id.split(':');
+                    setAgent(k === 'model' ? { agentModel: v } : { agentEffort: v });
+                  }} />
+                )}
+              </div>
+              <Box variant="small" color="text-body-secondary">AI · {modelLabel(project.agentModel ?? agentDefaults.current?.model)} · {t(`effort_${project.agentEffort ?? agentDefaults.current?.effort ?? 'high'}` as never)}</Box>
               {project.synopsis && project.synopsis !== project.title && <Box variant="small" color="text-body-secondary">{project.synopsis}</Box>}
             </div>
           } />}

@@ -3,7 +3,6 @@ import LoadingBar from '@cloudscape-design/chat-components/loading-bar';
 import SupportPromptGroup from '@cloudscape-design/chat-components/support-prompt-group';
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
-import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import PromptInput from '@cloudscape-design/components/prompt-input';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
@@ -14,6 +13,7 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '../api/realtime';
 import type { Asset, AssetMedia } from '../api/types';
 import AssetPicker from './AssetPicker';
+import AgentSteps, { type AgentStep } from './AgentSteps';
 import ChatWidget, { legacyValue, questionToWidget, type WidgetEntry } from './ChatWidget';
 import { ASSET_MIME } from './TimelineStrip';
 import { uploadAndFetch } from '../api/upload';
@@ -24,6 +24,9 @@ export interface ChatEntry {
   role: 'user' | 'assistant';
   text: string;
   tools?: { name: string; status: string }[];
+  steps?: AgentStep[];
+  model?: string;
+  effort?: string;
   question?: Extract<AgentEvent, { type: 'question' }>;
   widgets?: (WidgetEntry & { legacyKind?: string })[];
   pending?: boolean;
@@ -46,21 +49,6 @@ interface Props {
   onError?: (msg: string) => void;
 }
 
-const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
-  get_context: { ko: '프로젝트 확인', en: 'Reading project' },
-  search_archive: { ko: '아카이브 검색', en: 'Searching archive' },
-  get_asset_overview: { ko: '영상 파악', en: 'Understanding video' },
-  get_scenes: { ko: '장면 확인', en: 'Reading scenes' },
-  read_transcript: { ko: '대사 읽기', en: 'Reading transcript' },
-  look: { ko: '화면 보기', en: 'Looking at frames' },
-  ask_video: { ko: '영상 질의', en: 'Asking the video model' },
-  snap: { ko: '컷 지점 맞추기', en: 'Snapping cut points' },
-  analyze_framing: { ko: '세로 프레이밍 분석', en: 'Analyzing framing' },
-  get_timeline: { ko: '타임라인 확인', en: 'Reading timeline' },
-  edit_timeline: { ko: '편집 적용', en: 'Editing timeline' },
-  ask_user: { ko: '질문', en: 'Asking you' },
-  remember: { ko: '선호 저장', en: 'Saving preference' },
-};
 
 export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header, projectId, onError, media = {} }: Props) {
   const { t } = useI18n();
@@ -156,26 +144,14 @@ function UserMessage({ text }: { text: string }) {
 }
 
 function AssistantMessage({ entry: e, onAnswer, thumbs, titles, media }: { entry: ChatEntry; onAnswer: Props['onAnswer']; thumbs: Props['thumbs']; titles: Props['titles']; media: Record<string, AssetMedia> }) {
-  const { t, lang } = useI18n();
-  const tools = e.tools ?? [];
-  const running = tools.find((x) => x.status === 'in_progress');
+  const steps: AgentStep[] = e.steps ?? (e.tools ?? []).map((x) => ({ kind: 'tool' as const, name: x.name, status: x.status }));
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
       <Avatar color="gen-ai" iconName="gen-ai" ariaLabel="AI" tooltipText="AI" loading={e.pending && !e.text} />
       <div style={{ flex: 1, minWidth: 0, paddingTop: 4, lineHeight: 1.6 }}>
         <SpaceBetween size="s">
-          {tools.length > 0 && (
-            <ExpandableSection variant="footer" headerText={
-              <StatusIndicator type={running || e.pending ? 'loading' : tools.some((x) => x.status === 'failed') ? 'warning' : 'success'} colorOverride="grey">
-                {running ? (TOOL_LABELS[running.name]?.[lang] ?? running.name) : e.pending ? t('agentWorking') : t('stepsDone', { n: tools.length })}
-              </StatusIndicator>}>
-              <ol style={{ margin: 0, paddingLeft: 18, color: awsui.colorTextBodySecondary, fontSize: 13 }}>
-                {tools.map((x, i) => <li key={i}>{TOOL_LABELS[x.name]?.[lang] ?? x.name}{x.status === 'failed' ? ' ⚠︎' : ''}</li>)}
-              </ol>
-            </ExpandableSection>
-          )}
+          {(steps.length > 0 || (e.pending && !e.text)) && <AgentSteps steps={steps} pending={e.pending} model={e.model} effort={e.effort} />}
           {e.text && <Markdown text={e.text} />}
-          {e.pending && !e.text && !tools.length && <LoadingBar variant="gen-ai" />}
           {e.question && !e.widgets?.some((w) => w.uiId === e.question!.questionId) && (
             <ChatWidget w={{ uiId: e.question.questionId, spec: questionToWidget(e.question) }} media={media} thumbs={thumbs} titles={titles}
               onSubmit={(id, v, display) => onAnswer(id, legacyValue(e.question!.kind, v as Record<string, unknown>), display)} />

@@ -4,7 +4,8 @@ export type AgentEvent =
   | { type: 'turn.started' | 'turn.completed'; turn: string }
   | { type: 'turn.failed'; turn: string; error?: string }
   | { type: 'assistant.delta'; turn: string; text: string }
-  | { type: 'tool'; turn: string; name: string; status: string; error?: string }
+  | { type: 'tool'; turn: string; name: string; status: string; error?: string; summary?: string; detail?: string; ms?: number }
+  | { type: 'thought'; turn: string; text: string }
   | { type: 'timeline.updated'; version: number; message?: string }
   | { type: 'question'; questionId: string; question: string; kind: 'text' | 'choice' | 'clips' | 'confirm' | 'range';
       options?: string[]; clips?: { assetId: string; startSec: number; endSec: number; label?: string }[];

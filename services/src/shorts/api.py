@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, broker, ddb, ingest, projects, recipes, search, storage, ui_widgets
+from . import acl, broker, ddb, ingest, projects, recipes, search, steps, storage, ui_widgets
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
@@ -714,8 +714,17 @@ def get_project(req: Request):
     project, role = projects.require_project(req.principal, req.params["projectId"], "view")
     version = int(req.query["version"]) if req.query.get("version") else None
     return {"project": {k: project.get(k) for k in ("projectId", "title", "aspect", "synopsis", "currentVersion",
-                                                      "createdAt", "updatedAt", "ownerId", "assetIds")},
+                                                      "createdAt", "updatedAt", "ownerId", "assetIds", "agentModel",
+                                                      "agentEffort", "orchestrator")},
             "role": role, "lock": projects.lock_state(project), "timeline": projects.load_timeline(project, version)}
+
+
+@router.route("GET", "/agent/models")
+def agent_models(req: Request):
+    default_model = os.environ.get("BMA_MODEL_ID", "openai.gpt-6.1-sol")
+    return {"models": [{"id": k, "label": v[0], "tier": v[1]} for k, v in steps.AGENT_MODELS.items()],
+            "efforts": list(steps.EFFORTS), "default": {"model": default_model,
+                                                        "effort": os.environ.get("BMA_REASONING_EFFORT", "high")}}
 
 
 @router.route("PATCH", "/projects/{projectId}")
@@ -726,8 +735,16 @@ def update_project(req: Request):
         if req.body["orchestrator"] not in {"bma", "strands"}:
             raise BadRequest("orchestrator must be bma or strands")
         fields["orchestrator"] = req.body["orchestrator"]
+    if "agentModel" in req.body:
+        if req.body["agentModel"] not in steps.AGENT_MODELS:
+            raise BadRequest(f"agentModel must be one of {sorted(steps.AGENT_MODELS)}")
+        fields["agentModel"] = req.body["agentModel"]
+    if "agentEffort" in req.body:
+        if req.body["agentEffort"] not in steps.EFFORTS:
+            raise BadRequest(f"agentEffort must be one of {list(steps.EFFORTS)}")
+        fields["agentEffort"] = req.body["agentEffort"]
     if not fields:
-        raise BadRequest("Editable fields: title, synopsis, orchestrator")
+        raise BadRequest("Editable fields: title, synopsis, orchestrator, agentModel, agentEffort")
     ddb.update(f"PROJ#{project['projectId']}", "META", {**fields, "updatedAt": ddb.now_ms()})
     return {"ok": True}
 

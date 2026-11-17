@@ -292,5 +292,20 @@ export const en: typeof ko = {
   "wSkipped": "(skipped)",
   "wClips": "{n} clips",
   "wReordered": "reordered",
-  "wEdited": "edited"
+  "wEdited": "edited",
+  "safeZone": "Safe zone",
+  "safeZoneLabel": "Safe zone · not covered by app UI",
+  "thinking": "Thinking",
+  "stepsSummary": "{n} steps · tools {s}",
+  "agentSettings": "AI settings",
+  "agentModel": "Model",
+  "agentEffort": "Reasoning effort",
+  "agentSettingsSaved": "Applies from your next message",
+  "tier_best": "Best quality",
+  "tier_balanced": "Balanced",
+  "tier_fast": "Fastest",
+  "effort_low": "Low (fast)",
+  "effort_medium": "Medium",
+  "effort_high": "High",
+  "effort_xhigh": "Very high (slow)"
 };

@@ -31,7 +31,7 @@ const ingest = new IngestStack(app, `${prefix}-Ingest`, {
 });
 const agent = new AgentStack(app, `${prefix}-Agent`, {
   env, prefix, mediaBucket: core.mediaBucket, table: core.table, userPool: core.userPool, ingest,
-  bmaModelId: app.node.tryGetContext('bmaModelId') ?? 'openai.gpt-5.6-luna',
+  bmaModelId: app.node.tryGetContext('bmaModelId') ?? 'openai.gpt-6.1-sol',
   mode,
 });
 if (mode === 'full' && agent.generation) {

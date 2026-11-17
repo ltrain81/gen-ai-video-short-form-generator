@@ -6,6 +6,7 @@ import type { CaptionItem, ClipItem, Item, TextItem, Timeline } from '@shorts/ti
 import { sampleKeyframes, timelineDuration } from '@shorts/timeline';
 import { CSSProperties, PointerEvent as RPointerEvent, WheelEvent as RWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetMedia } from '../api/types';
+import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 
 /**
@@ -87,6 +88,7 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain'): CSSPrope
 
 export default function Preview({ timeline: timelineIn, media, time, onTime, selectedId, playing: playingProp, onPlayingChange, onDropFiles, onDropAsset,
   editable, onOps, onSelect }: Props) {
+  const { t } = useI18n();
   // Live overrides while dragging on the canvas; cleared when the saved timeline comes back.
   const [ov, setOv] = useState<Record<string, Partial<Item>>>({});
   useEffect(() => { setOv({}); }, [timelineIn]);
@@ -105,7 +107,10 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const playing = playingProp ?? playingLocal;
   const setPlaying = useCallback((v: boolean) => { if (onPlayingChange) onPlayingChange(v); else setPlayingLocal(v); }, [onPlayingChange]);
   const [dropOver, setDropOver] = useState(false);
-  const [safe, setSafe] = useState(true);
+  // Safe-zone guide (area not covered by Shorts/Reels/TikTok UI): off by default, remembered, and shown while dragging.
+  const [safe, setSafeState] = useState(() => localStorage.getItem('safeZone') === '1');
+  const setSafe = (v: boolean) => { localStorage.setItem('safeZone', v ? '1' : '0'); setSafeState(v); };
+  const [dragging, setDragging] = useState(false);
   const [stageW, setStageW] = useState(360);
   const clock = useRef<{ t0: number; wall: number } | null>(null);
   const duration = useMemo(() => timelineDuration(timeline), [timeline]);
@@ -203,6 +208,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     if (playing) setPlaying(false);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = { id: item.id, trackId: trackOf(item.id), kind, mode, x0: e.clientX, y0: e.clientY, moved: false, orig };
+    if (kind !== 'main') setDragging(true);
   };
 
   /** Pan the crop focus of the main clip (shifts every point of the reframe path, so auto-tracking is kept). */
@@ -279,6 +285,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const onDragEnd = () => {
     const d = dragRef.current;
     dragRef.current = null;
+    setDragging(false);
     setGuides([]);
     if (!d || !d.moved) return;
     const patch = ovRef.current[d.id];
@@ -446,8 +453,10 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
               ? { position: 'absolute', top: 0, bottom: 0, left: `${g.at * 100}%`, width: 1, background: '#ff2d95', pointerEvents: 'none', zIndex: 20 }
               : { position: 'absolute', left: 0, right: 0, top: `${g.at * 100}%`, height: 1, background: '#ff2d95', pointerEvents: 'none', zIndex: 20 }} />
           ))}
-          {safe && timeline.settings.safeZone && timeline.settings.safeZone !== 'none' && (
-            <div style={{ position: 'absolute', left: '6%', right: '18%', top: '12%', bottom: '20%', border: '1px dashed rgba(255,255,255,0.35)', pointerEvents: 'none' }} />
+          {(safe || dragging) && timeline.settings.safeZone && timeline.settings.safeZone !== 'none' && (
+            <div style={{ position: 'absolute', left: '6%', right: '18%', top: '12%', bottom: '20%', border: '1px dashed rgba(255,255,255,0.45)', pointerEvents: 'none', zIndex: 15 }}>
+              <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, color: 'rgba(255,255,255,0.75)', textShadow: '0 1px 2px #000' }}>{t('safeZoneLabel')}</span>
+            </div>
           )}
           {!mainItem && duration === 0 && <Box textAlign="center" color="inherit" padding="xxl"><span style={{ color: '#9ca3af' }}>—</span></Box>}
         </div>
@@ -457,7 +466,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
         <input type="range" min={0} max={Math.max(0.01, duration)} step={0.01} value={Math.min(time, duration)} style={{ width: `min(${Math.max(240, stageW)}px, 40vw)` }}
           onChange={(e) => { setPlaying(false); onTime(Number(e.target.value)); }} />
         <Box variant="small">{fmtTime(time)} / {fmtTime(duration)}</Box>
-        <Toggle checked={safe} onChange={(e) => setSafe(e.detail.checked)}>safe zone</Toggle>
+        <Toggle checked={safe} onChange={(e) => setSafe(e.detail.checked)}>{t('safeZone')}</Toggle>
       </SpaceBetween></div>
     </SpaceBetween>
   );

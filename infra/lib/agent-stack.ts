@@ -34,6 +34,9 @@ const AGENT_PACKAGES = ['openai==3.52.0', 'aws-bedrock-token-generator==1.1.0', 
  * Orchestrator: Bedrock Managed Agents (OpenAI Codex harness) with our tools running inside an AgentCore Runtime
  * microVM; broker Lambda relays turns to the browser through AppSync Events.
  */
+/** Orchestrator models a project may pick (mirrors services/shorts/steps.py AGENT_MODELS). */
+export const AGENT_MODEL_IDS = ['openai.gpt-6.1-sol', 'openai.gpt-6.1-terra', 'openai.gpt-6-luna', 'openai.gpt-5.6-sol', 'openai.gpt-5.6-luna'];
+
 export class AgentStack extends Stack {
   readonly broker: lambda.Function;
   readonly eventsHttpDomain: string;
@@ -164,7 +167,7 @@ export function onSubscribe(ctx) {
     });
     sessionRole.addToPolicy(new iam.PolicyStatement({
       actions: ['bedrock-mantle:CreateInference'], resources: ['*'],
-      conditions: { StringEquals: { 'bedrock-mantle:Model': props.bmaModelId } },
+      conditions: { StringEquals: { 'bedrock-mantle:Model': [...new Set([props.bmaModelId, ...AGENT_MODEL_IDS])] } },
     }));
     sessionRole.addToPolicy(new iam.PolicyStatement({
       actions: ['bedrock-agentcore:InvokeAgentRuntime', 'bedrock-agentcore:StopRuntimeSession'],
@@ -178,6 +181,7 @@ export function onSubscribe(ctx) {
         ...common,
         ORCHESTRATOR: 'bma',
         BMA_MODEL_ID: props.bmaModelId,
+        BMA_REASONING_EFFORT: 'high',
         BMA_RUNTIME_ARN: runtimeArn,
         BMA_SESSION_ROLE_ARN: sessionRole.roleArn,
         STRANDS_MODEL_ID: 'us.openai.gpt-6.1-sol',
