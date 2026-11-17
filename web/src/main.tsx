@@ -1,5 +1,6 @@
 import '@cloudscape-design/global-styles/index.css';
-import { applyMode, Mode, setThemeClass, Theme } from '@cloudscape-design/global-styles';
+import { setThemeClass, Theme } from '@cloudscape-design/global-styles';
+import { applyColorPref, type ColorPref, watchSystemColor } from './theme';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -13,8 +14,8 @@ import './styles.css';
 // package; the open-source release is planned for Q1 2027 — until then the default font is used.
 setThemeClass(Theme.OneTheme, document.body);
 
-const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
-applyMode(localStorage.getItem('mode') === 'dark' || (prefersDark && !localStorage.getItem('mode')) ? Mode.Dark : Mode.Light);
+applyColorPref((localStorage.getItem('mode') as ColorPref) || 'system');
+watchSystemColor();
 
 loadConfig().then(() => {
   configureAuth();

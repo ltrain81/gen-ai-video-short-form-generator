@@ -14,6 +14,10 @@ import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
 import type { AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
+import EditorPanel from '../components/EditorPanel';
+import SegmentedControl from '@cloudscape-design/components/segmented-control';
+import Button from '@cloudscape-design/components/button';
+import type { EditOp } from '../components/TimelineStrip';
 import Preview from '../components/Preview';
 import TimelineStrip from '../components/TimelineStrip';
 import { useI18n } from '../i18n';
@@ -39,6 +43,10 @@ export default function ProjectPage() {
   const [time, setTime] = useState(0);
   const [selected, setSelected] = useState<{ item: Item; trackId?: string } | undefined>();
   const sentFirst = useRef(false);
+  const [mode, setMode] = useState<'ai' | 'manual'>('ai');
+  const [saving, setSaving] = useState(false);
+  const undoStack = useRef<number[]>([]);
+  const redoStack = useRef<number[]>([]);
 
   const ensureMedia = useCallback(async (ids: string[]) => {
     const missing = ids.filter((id) => !(id in media));
@@ -156,6 +164,65 @@ export default function ProjectPage() {
     catch (e) { setBusy(false); notify('error', (e as Error).message); }
   }, [projectId, notify]);
 
+  // Manual edits: same server engine as the agent; touched properties are pinned.
+  const applyOps = useCallback(async (ops: EditOp[], message: string) => {
+    if (!project || busy) return;
+    setSaving(true);
+    try {
+      const before = project.currentVersion;
+      const r = await api.applyOps(projectId, ops, before, message);
+      const failed = r.results.filter((x) => !x.ok);
+      if (failed.length) notify('warning', failed.map((f) => f.error).join('; '));
+      if (r.currentVersion !== before) {
+        undoStack.current.push(before);
+        redoStack.current = [];
+        setTimeline(r.timeline);
+        setProject({ ...project, currentVersion: r.currentVersion });
+        const added = r.results.find((x) => x.itemId);
+        if (ops.some((o) => o.op === 'remove')) setSelected(undefined);
+        if (added?.itemId) {
+          const it = r.timeline.tracks.flatMap((tr) => tr.items.map((i) => ({ i, tr: tr.id }))).find((x) => x.i.id === added.itemId);
+          if (it) setSelected({ item: it.i, trackId: it.tr });
+        } else if (selected) {
+          const it = r.timeline.tracks.flatMap((tr) => tr.items.map((i) => ({ i, tr: tr.id }))).find((x) => x.i.id === selected.item.id);
+          setSelected(it ? { item: it.i, trackId: it.tr } : undefined);
+        }
+        const ids = ops.map((o) => o.assetId).filter(Boolean) as string[];
+        if (ids.length) ensureMedia(ids);
+      }
+    } catch (e) {
+      notify('error', (e as Error).message);
+      loadProject().catch(() => undefined);
+    } finally {
+      setSaving(false);
+    }
+  }, [project, busy, projectId, notify, selected, ensureMedia, loadProject]);
+
+  const restore = useCallback(async (v: number, push: 'undo' | 'redo' | 'none' = 'none') => {
+    if (!project) return;
+    const cur = project.currentVersion;
+    await api.restoreVersion(projectId, v);
+    if (push === 'undo') redoStack.current.push(cur); else if (push === 'redo') undoStack.current.push(cur); else undoStack.current.push(cur);
+    await loadProject();
+  }, [project, projectId, loadProject]);
+  const undo = useCallback(() => { const v = undoStack.current.pop(); if (v != null) restore(v, 'undo'); }, [restore]);
+  const redo = useCallback(() => { const v = redoStack.current.pop(); if (v != null) restore(v, 'redo'); }, [restore]);
+
+  // Keyboard shortcuts in manual mode.
+  useEffect(() => {
+    if (mode !== 'manual') return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+      if (!selected) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); applyOps([{ op: 'remove', itemId: selected.item.id }], 'delete'); }
+      if (e.key.toLowerCase() === 's') { e.preventDefault(); applyOps([{ op: 'split', itemId: selected.item.id, at: time }], 'split'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mode, selected, time, applyOps, undo, redo]);
+
   // First message typed on the Studio landing.
   useEffect(() => {
     const first = (location.state as { firstMessage?: string } | null)?.firstMessage;
@@ -183,6 +250,13 @@ export default function ProjectPage() {
               onFollow={(e) => { e.preventDefault(); if (e.detail.href === '/') navigate('/'); }} ariaLabel="breadcrumbs" />
           </SpaceBetween>
           <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+            <SegmentedControl selectedId={mode} onChange={(e) => setMode(e.detail.selectedId as 'ai' | 'manual')}
+              options={[{ id: 'ai', text: t('modeAi'), iconName: 'gen-ai' }, { id: 'manual', text: t('modeManual'), iconName: 'edit' }]} />
+            {mode === 'manual' && <>
+              <Button variant="icon" iconName="undo" ariaLabel="undo" disabled={!undoStack.current.length || saving} onClick={undo} />
+              <Button variant="icon" iconName="redo" ariaLabel="redo" disabled={!redoStack.current.length || saving} onClick={redo} />
+            </>}
+            {saving && <StatusIndicator type="loading">{t('saving')}</StatusIndicator>}
             <Badge>{timeline.settings.aspect}</Badge>
             <Badge color="grey">v{project.currentVersion}</Badge>
             {busy && <StatusIndicator type="loading">{t('agentWorking')}</StatusIndicator>}
@@ -194,20 +268,27 @@ export default function ProjectPage() {
         <div className="studio-timeline" style={{ borderTop: divider, background: awsui.colorBackgroundContainerContent }}>
           <ExpandableSection defaultExpanded variant="footer" headerText={t('timeline')}>
             <TimelineStrip timeline={timeline} time={time} onSeek={setTime} selectedId={selected?.item.id}
-              onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles} />
+              onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles}
+              editable={mode === 'manual' && !busy} onOps={applyOps} />
           </ExpandableSection>
         </div>
       </section>
       {/* Right: chat sidebar */}
       <aside className="studio-chat-pane" style={{ borderLeft: divider, background: awsui.colorBackgroundContainerContent }}>
-        <ChatPanel entries={entries} busy={busy} onSend={send} onAnswer={answer} thumbs={thumbs} titles={titles}
+        {mode === 'manual' ? (
+          <>
+            {busy && <Box padding="s"><StatusIndicator type="loading">{t('lockedByAgent')}</StatusIndicator></Box>}
+            <EditorPanel projectId={projectId} timeline={timeline} selected={selected?.item} time={time} titles={titles}
+              onOps={applyOps} onRestore={(v) => restore(v)} version={project.currentVersion} disabled={busy || saving} />
+          </>
+        ) : <ChatPanel entries={entries} busy={busy} onSend={send} onAnswer={answer} thumbs={thumbs} titles={titles}
           suggestions={suggestions} selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)}
           header={
             <div style={{ padding: '14px 20px', borderBottom: divider }}>
               <Box variant="h3" padding="n">{project.title}</Box>
               {project.synopsis && project.synopsis !== project.title && <Box variant="small" color="text-body-secondary">{project.synopsis}</Box>}
             </div>
-          } />
+          } />}
       </aside>
     </div>
   );

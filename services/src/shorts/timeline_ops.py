@@ -148,6 +148,7 @@ def op_remove(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     _guard(tl, f"items/{op['itemId']}", actor)
     tr, _, idx = find_item(tl, op["itemId"])
     tr["items"].pop(idx)
+    tl["pins"] = [p for p in tl.get("pins", []) if not p.startswith(f"items/{op['itemId']}")]
     return {}
 
 
@@ -196,7 +197,7 @@ def op_split(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
 
 
 def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
-    _guard(tl, f"items/{op['itemId']}", actor)
+    _guard(tl, f"items/{op['itemId']}/order", actor)
     tr, it, idx = find_item(tl, op["itemId"])
     dest = track(tl, op.get("track", tr["id"]))
     tr["items"].pop(idx)
@@ -347,8 +348,29 @@ OPS = {
 }
 
 
-def apply(timeline: dict, ops: list[dict], actor: str, assets: dict) -> tuple[dict, list[dict]]:
-    """Apply ops to a copy. Each op succeeds or is reported as rejected; never partially applied."""
+def pins_for(op: dict, out: dict) -> list[str]:
+    """Paths a *user* op should pin so the agent will not override the manual edit."""
+    name, iid = op.get("op"), op.get("itemId")
+    if name in {"add_clip", "add_text"} and out.get("itemId"):
+        return [f"items/{out['itemId']}"]
+    if name == "trim":
+        return [f"items/{iid}/{k}" for k in ("srcIn", "srcOut", "duration") if k in op]
+    if name == "split" and out.get("itemIds"):
+        a, b = out["itemIds"]
+        return [f"items/{a}/srcOut", f"items/{b}/srcIn"]
+    if name == "move":
+        return [f"items/{iid}/order"]
+    if name == "update":
+        return [f"items/{iid}/{k}" for k in (op.get("set") or {})]
+    if name in {"settings", "meta"}:
+        return [f"{name}/{k}" for k in (op.get("set") or {})]
+    return []
+
+
+def apply(timeline: dict, ops: list[dict], actor: str, assets: dict,
+          auto_pin: bool = True) -> tuple[dict, list[dict]]:
+    """Apply ops to a copy. Each op succeeds or is reported as rejected; never partially applied.
+    User ops auto-pin the paths they touch (unless auto_pin=False)."""
     tl = copy.deepcopy(timeline)
     results = []
     for i, op in enumerate(ops):
@@ -359,6 +381,8 @@ def apply(timeline: dict, ops: list[dict], actor: str, assets: dict) -> tuple[di
         snapshot = copy.deepcopy(tl)
         try:
             out = fn(tl, op, actor, assets)
+            if actor == "user" and auto_pin and op.get("op") != "pin":
+                tl["pins"] = sorted(set(tl.get("pins", [])) | set(pins_for(op, out)))
             relayout(tl)
             results.append({"index": i, "op": op["op"], "ok": True, **out})
         except (OpError, KeyError, TypeError, ValueError) as exc:

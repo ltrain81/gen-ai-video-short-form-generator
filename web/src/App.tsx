@@ -18,6 +18,7 @@ import AssetPage from './pages/AssetPage';
 import LoginPage from './pages/LoginPage';
 import ProjectPage from './pages/ProjectPage';
 import StudioPage from './pages/StudioPage';
+import { applyColorPref, type ColorPref } from './theme';
 
 interface AppCtx {
   me: Me | null;
@@ -33,6 +34,7 @@ export default function App() {
   const [flash, setFlash] = useState<FlashbarProps.MessageDefinition[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
+  const [colorPref, setColorPref] = useState<ColorPref>((localStorage.getItem('mode') as ColorPref) || 'system');
 
   const notify = useCallback((type: FlashbarProps.Type, content: string) => {
     const id = String(Date.now() + Math.random());
@@ -57,6 +59,11 @@ export default function App() {
           <TopNavigation
             identity={{ href: '/', title: `${t('appName')} — ${t('appSubtitle')}`, onFollow: (e) => { e.preventDefault(); navigate('/'); } }}
             utilities={[
+              {
+                type: 'menu-dropdown', text: t(`theme_${colorPref}` as never), ariaLabel: t('theme'),
+                items: (['light', 'dark', 'system'] as ColorPref[]).map((m) => ({ id: m, text: t(`theme_${m}` as never), checked: colorPref === m, itemType: 'checkbox' as const })),
+                onItemClick: (e) => { const m = e.detail.id as ColorPref; setColorPref(m); applyColorPref(m); },
+              },
               { type: 'button', text: t('language'), onClick: () => setLang(lang === 'ko' ? 'en' : 'ko') },
               {
                 type: 'menu-dropdown',

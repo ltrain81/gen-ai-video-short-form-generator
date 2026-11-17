@@ -79,11 +79,14 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
   useEffect(() => {
     const el = stageRef.current?.parentElement;
     if (!el) return;
+    // Size to the real available box (the canvas pane shrinks when the timeline grows).
+    const box = el.closest('.studio-stage') as HTMLElement | null;
     const ro = new ResizeObserver(() => {
-      const maxH = Math.max(240, window.innerHeight - 380);
+      const maxH = box ? Math.max(200, box.clientHeight - 90) : Math.max(240, window.innerHeight - 380);
       setStageW(Math.min(el.clientWidth, (maxH * width) / height));
     });
     ro.observe(el);
+    if (box) ro.observe(box);
     return () => ro.disconnect();
   }, [width, height]);
 

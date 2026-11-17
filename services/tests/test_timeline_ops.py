@@ -28,7 +28,7 @@ def test_magnetic_track_split_trim_remove():
 
 
 def test_pins_block_agent_but_not_user():
-    tl, r = T.apply(base(), [{"op": "add_clip", "assetId": "v", "srcIn": 0, "srcOut": 10}], "user", ASSETS)
+    tl, r = T.apply(base(), [{"op": "add_clip", "assetId": "v", "srcIn": 0, "srcOut": 10}], "user", ASSETS, auto_pin=False)
     iid = r[0]["itemId"]
     tl, _ = T.apply(tl, [{"op": "pin", "path": f"items/{iid}/srcIn"}], "user", ASSETS)
     tl2, r = T.apply(tl, [{"op": "trim", "itemId": iid, "srcIn": 3}, {"op": "trim", "itemId": iid, "srcOut": 8}], "agent", ASSETS)
@@ -56,3 +56,15 @@ def test_bad_op_is_rejected_atomically():
     tl, r = T.apply(base(), [{"op": "add_clip", "assetId": "nope"}, {"op": "explode"}], "agent", ASSETS)
     assert [x["ok"] for x in r] == [False, False]
     assert T.duration(tl) == 0
+
+
+def test_user_ops_auto_pin_and_agent_respects():
+    tl, r = T.apply(base(), [{"op": "add_clip", "assetId": "v", "srcIn": 0, "srcOut": 10}], "agent", ASSETS)
+    iid = r[0]["itemId"]
+    tl, r = T.apply(tl, [{"op": "trim", "itemId": iid, "srcOut": 6}, {"op": "update", "itemId": iid, "set": {"volume": 0.5}}], "user", ASSETS)
+    assert set(tl["pins"]) == {f"items/{iid}/srcOut", f"items/{iid}/volume"}
+    tl2, r = T.apply(tl, [{"op": "trim", "itemId": iid, "srcOut": 9}, {"op": "trim", "itemId": iid, "srcIn": 1},
+                          {"op": "update", "itemId": iid, "set": {"volume": 1}}], "agent", ASSETS)
+    assert [x["ok"] for x in r] == [False, True, False]
+    tl3, _ = T.apply(tl, [{"op": "remove", "itemId": iid}], "user", ASSETS)
+    assert tl3["pins"] == []

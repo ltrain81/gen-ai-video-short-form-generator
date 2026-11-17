@@ -69,6 +69,9 @@ export const api = {
     call<{ project: ProjectSummary; role: string; lock: unknown; timeline: Timeline }>('GET', `/projects/${id}${version != null ? `?version=${version}` : ''}`),
   saveTimeline: (id: string, timeline: Timeline, baseVersion: number, message = '') =>
     call<{ currentVersion: number }>('PUT', `/projects/${id}/timeline`, { timeline, baseVersion, message }),
+  applyOps: (id: string, ops: Record<string, unknown>[], baseVersion: number, message?: string, autoPin = true) =>
+    call<{ currentVersion: number; results: { ok: boolean; error?: string; itemId?: string }[]; timeline: Timeline }>(
+      'POST', `/projects/${id}/ops`, { ops, baseVersion, message, autoPin }),
   versions: (id: string) => call<{ version: number; author: string; message: string; createdAt: number }[]>('GET', `/projects/${id}/versions`),
   restoreVersion: (id: string, version: number) => call<{ currentVersion: number }>('POST', `/projects/${id}/restore`, { version }),
   attachAssets: (id: string, assetIds: string[]) => call<{ assetIds: string[] }>('POST', `/projects/${id}/assets`, { assetIds }),

@@ -650,6 +650,33 @@ def save_timeline(req: Request):
     return {"currentVersion": updated["currentVersion"]}
 
 
+@router.route("POST", "/projects/{projectId}/ops")
+def apply_ops(req: Request):
+    """Manual edits (L3/L4). Same engine as the agent; touched paths are pinned so the AI keeps them."""
+    from . import timeline_ops
+    p = req.principal
+    project, _ = projects.require_project(p, req.params["projectId"], "edit")
+    ops, base = req.require("ops", "baseVersion")
+    if int(base) != project["currentVersion"]:
+        raise Conflict("Timeline changed; reload")
+    tl = projects.load_timeline(project)
+    ids = {o["assetId"] for o in ops if isinstance(o, dict) and o.get("assetId")} | {
+        i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
+    accessible = acl.accessible_asset_ids(p)
+    assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)}
+    for o in ops:
+        if isinstance(o, dict) and o.get("op") == "captions" and "transcripts" not in o:
+            from . import agent_tools
+            main = timeline_ops.main_track(tl)
+            o["transcripts"] = {aid: agent_tools._transcript(assets[aid]) for aid in
+                                {i.get("assetId") for i in main["items"]} if aid in assets}
+    new_tl, results = timeline_ops.apply(tl, list(ops)[:200], "user", assets, bool(req.body.get("autoPin", True)))
+    version = project["currentVersion"]
+    if any(r["ok"] for r in results) and new_tl != tl:  # no-op edits (e.g. drop in place) create no version
+        version = projects.save(p, project, new_tl, version, "user", str(req.body.get("message", "manual edit")))["currentVersion"]
+    return {"currentVersion": version, "results": results, "timeline": new_tl}
+
+
 @router.route("GET", "/projects/{projectId}/versions")
 def project_versions(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
