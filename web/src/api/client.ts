@@ -1,7 +1,7 @@
 import { accessToken } from '../auth';
 import { getConfig } from '../config';
 import type { Timeline } from '@shorts/timeline';
-import type { RenderInfo, ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
+import type { GenJob, Recipe, Skill, BrandKit, BatchInfo, RenderInfo, ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -63,7 +63,7 @@ export const api = {
   addGroupMember: (gid: string, sub: string) => call<void>('POST', `/groups/${gid}/members`, { sub }),
   removeGroupMember: (gid: string, sub: string) => call<void>('DELETE', `/groups/${gid}/members/${sub}`),
   projects: () => call<ProjectSummary[]>('GET', '/projects'),
-  createProject: (b: { title?: string; aspect?: string; synopsis?: string; assetIds?: string[] }) =>
+  createProject: (b: { title?: string; aspect?: string; synopsis?: string; assetIds?: string[]; recipe?: string; lengthSec?: number; captions?: string; music?: boolean; brandKitId?: string }) =>
     call<{ projectId: string; currentVersion: number }>('POST', '/projects', b),
   project: (id: string, version?: number) =>
     call<{ project: ProjectSummary; role: string; lock: unknown; timeline: Timeline }>('GET', `/projects/${id}${version != null ? `?version=${version}` : ''}`),
@@ -82,5 +82,28 @@ export const api = {
   chat: (id: string) => call<{ messages: ChatMessage[]; busy: boolean }>('GET', `/projects/${id}/chat`),
   sendChat: (id: string, b: { text?: string; selection?: unknown; answer?: { questionId: string; value: unknown }; attachAssetIds?: string[] }) =>
     call<{ turn: string; channel: string }>('POST', `/projects/${id}/chat`, b),
+  recipes: () => call<Recipe[]>('GET', '/recipes'),
+  putRecipe: (id: string, r: Partial<Recipe>) => call<Recipe>('PUT', `/recipes/${id}`, r),
+  deleteRecipe: (id: string) => call<void>('DELETE', `/recipes/${id}`),
+  skills: () => call<Skill[]>('GET', '/skills'),
+  skill: (name: string) => call<Skill>('GET', `/skills/${name}`),
+  putSkill: (name: string, description: string, body: string) => call<Skill>('PUT', `/skills/${name}`, { description, body }),
+  deleteSkill: (name: string) => call<void>('DELETE', `/skills/${name}`),
+  brandKits: () => call<BrandKit[]>('GET', '/brand-kits'),
+  createBrandKit: (k: Partial<BrandKit>) => call<BrandKit>('POST', '/brand-kits', k),
+  updateBrandKit: (id: string, k: Partial<BrandKit>) => call<BrandKit>('PUT', `/brand-kits/${id}`, k),
+  deleteBrandKit: (id: string) => call<void>('DELETE', `/brand-kits/${id}`),
+  createBatch: (b: { assetId: string; count: number; recipe?: string; aspect?: string; lengthSec?: number; instruction?: string; brandKitId?: string }) =>
+    call<BatchInfo>('POST', '/batches', b),
+  batches: () => call<BatchInfo[]>('GET', '/batches'),
+  batch: (id: string) => call<BatchInfo>('GET', `/batches/${id}`),
+  suggestMetadata: (id: string) => call<{ title: string; description: string; hashtags: string[] }>('POST', `/projects/${id}/metadata/suggest`),
+  generationEstimate: (kind: string, params: Record<string, string | number>) =>
+    call<{ available?: boolean; kind: string; seconds: number; usd: number; coldStart: boolean; instance?: string; model?: string }>(
+      'GET', `/generation/estimate?${new URLSearchParams({ kind, ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) })}`),
+  generate: (projectId: string, b: Record<string, unknown>) => call<GenJob>('POST', `/projects/${projectId}/generate`, b),
+  generations: (projectId: string) => call<GenJob[]>('GET', `/projects/${projectId}/generations`),
+  workspaceKeys: () => call<Record<string, boolean>>('GET', '/workspace/keys'),
+  putWorkspaceKey: (provider: string, value: string) => call<void>('PUT', `/workspace/keys/${provider}`, { value }),
   audit: (date?: string) => call<Record<string, unknown>[]>('GET', `/audit${date ? `?date=${date}` : ''}`),
 };

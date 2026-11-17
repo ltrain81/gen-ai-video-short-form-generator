@@ -185,6 +185,25 @@ def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> 
                 break
 
 
+def _ensure_brand(p: Principal, project_id: str) -> None:
+    """Brand kits are applied deterministically after each turn (not left to the model)."""
+    project = ddb.get(f"PROJ#{project_id}", "META") or {}
+    if not project.get("brandKitId"):
+        return
+    tl = projects.load_timeline(project)
+    has = any((i.get("provenance") or {}).get("reason") == "brand" for t in tl["tracks"] for i in t["items"])
+    if has and tl["settings"].get("brandKitId") == project["brandKitId"]:
+        return
+    if not any(t["items"] for t in tl["tracks"] if t["kind"] == "video"):
+        return
+    from . import agent_tools
+    holder = f"agent:{((project.get('agent') or {}).get('environmentId')) or 'broker'}"
+    try:
+        agent_tools.apply_brand_kit(agent_tools.ToolContext(principal=p, project_id=project_id, holder=holder), {})
+    except Exception:  # noqa: BLE001 - never fail the turn because of branding
+        log.exception("Brand kit application failed")
+
+
 # ------------------------------------------------------------------ entry
 def run_turn(event: dict) -> None:
     project_id, sub = event["projectId"], event["sub"]
@@ -206,6 +225,7 @@ def run_turn(event: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         log.exception("Turn failed")
         error = str(exc)[:500]
+        _ensure_brand(p, project_id)
     finally:
         relay.flush()
         save_message(project_id, "assistant", relay.text, tools=relay.tools or None, error=error, turn=turn)

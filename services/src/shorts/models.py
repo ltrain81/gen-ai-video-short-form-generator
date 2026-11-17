@@ -258,3 +258,39 @@ def describe_frames(images: list[bytes], context: str = "", language: str = "Eng
     resp = runtime().converse(modelId=get_config().vision_model_id, messages=[{"role": "user", "content": content}],
                               inferenceConfig={"maxTokens": 900})
     return "".join(c.get("text", "") for c in resp["output"]["message"]["content"]).strip()
+
+
+def suggest_metadata(context: str, language: str) -> dict:
+    """Title / description / hashtags for publishing, as JSON."""
+    resp = runtime().converse(
+        modelId=get_config().vision_model_id,
+        messages=[{"role": "user", "content": [{"text": (
+            "Write publishing metadata for this edited video. Reply with JSON only: "
+            '{"title": str (<= 60 chars, hook-like), "description": str (2-3 sentences), '
+            '"hashtags": [str] (5-8, each starting with #)}. '
+            f"Write in {language}. Video context:\n{context[:6000]}")}]}],
+        inferenceConfig={"maxTokens": 700})
+    text = "".join(c.get("text", "") for c in resp["output"]["message"]["content"])
+    try:
+        data = json.loads(text[text.find("{"): text.rfind("}") + 1])
+    except ValueError:
+        data = {}
+    tags = [t if str(t).startswith("#") else f"#{t}" for t in data.get("hashtags", [])][:10]
+    return {"title": str(data.get("title", ""))[:100], "description": str(data.get("description", ""))[:1000], "hashtags": tags}
+
+
+def contains_real_person(image: bytes) -> dict:
+    """Safety gate for generation references: is there an identifiable real person (face clearly visible)?"""
+    resp = runtime().converse(
+        modelId=get_config().vision_model_id,
+        messages=[{"role": "user", "content": [
+            {"image": {"format": "jpeg" if image[:3] == b"\xff\xd8\xff" else "png", "source": {"bytes": image}}},
+            {"text": ('Does this image show an identifiable real human (a photo or realistic depiction where a face is '
+                      'clearly visible)? Illustrations, cartoons, mascots, products, landscapes and people with no '
+                      'visible face are not identifiable. Reply JSON only: {"identifiable_real_person": bool, "reason": str}')}]}],
+        inferenceConfig={"maxTokens": 200})
+    text = "".join(c.get("text", "") for c in resp["output"]["message"]["content"])
+    try:
+        return json.loads(text[text.find("{"): text.rfind("}") + 1])
+    except ValueError:
+        return {"identifiable_real_person": True, "reason": "unparseable safety verdict (fail closed)"}

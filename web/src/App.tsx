@@ -17,6 +17,8 @@ import ArchivePage from './pages/ArchivePage';
 import AssetPage from './pages/AssetPage';
 import LoginPage from './pages/LoginPage';
 import ProjectPage from './pages/ProjectPage';
+import BatchPage from './pages/BatchPage';
+import LibraryPage from './pages/LibraryPage';
 import StudioPage from './pages/StudioPage';
 import { applyColorPref, type ColorPref } from './theme';
 
@@ -90,6 +92,7 @@ export default function App() {
               items={[
                 { type: 'link', text: t('navStudio'), href: '/' },
                 { type: 'link', text: t('navArchive'), href: '/archive' },
+                { type: 'link', text: t('navLibrary'), href: '/library' },
                 ...(me?.tenantRole === 'admin' ? [{ type: 'link' as const, text: t('navAdmin'), href: '/admin' }] : []),
               ]}
             />
@@ -100,6 +103,8 @@ export default function App() {
               <Route path="/" element={<StudioPage />} />
               <Route path="/studio/:projectId" element={<ProjectPage />} />
               <Route path="/archive" element={<ArchivePage />} />
+              <Route path="/library" element={<LibraryPage />} />
+              <Route path="/batches/:batchId" element={<BatchPage />} />
               <Route path="/archive/:assetId" element={<AssetPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="*" element={<Navigate to="/" />} />

@@ -214,6 +214,56 @@ UPDATABLE = {"transform", "reframe", "kenBurns", "volume", "fadeIn", "fadeOut", 
              "role", "preset", "start", "duration", "page", "fill", "box", "words"}
 
 
+OBJECT_PRCORNERS = {"tl": (0.13, 0.08), "tr": (0.87, 0.08), "bl": (0.13, 0.92), "br": (0.87, 0.92)}
+
+
+def op_brand(tl: dict, op: dict, actor: str, assets: dict) -> dict:
+    """Apply a brand kit: logo PIP overlay over the whole video, intro/outro clips, caption/text styling.
+    Re-applying replaces the previous brand elements (tagged provenance.reason == 'brand')."""
+    kit = op.get("kit") or {}
+    tl["settings"]["brandKitId"] = kit.get("brandKitId")
+    for tr in tl["tracks"]:
+        tr["items"] = [i for i in tr["items"] if (i.get("provenance") or {}).get("reason") != "brand"
+                       or is_pinned(tl, f"items/{i['id']}")]
+    relayout(tl)
+    main = main_track(tl)
+    added = []
+    for key, at_end in (("introAssetId", False), ("outroAssetId", True)):
+        aid = kit.get(key)
+        if aid and aid in assets:
+            a = assets[aid]
+            dur = float(a.get("durationSec") or 2.5)
+            r = op_add_clip(tl, {"assetId": aid, "srcIn": 0, "srcOut": min(dur, 6), "duration": 2.5,
+                                 "index": len(main["items"]) if at_end else 0, "reason": "brand"}, actor, assets)
+            added.append(r["itemId"])
+    relayout(tl)
+    total = duration(tl)
+    logo = kit.get("logoAssetId")
+    if logo and logo in assets and total > 0:
+        x, y = CORNERS.get(kit.get("logoCorner", "tr"), CORNERS["tr"])
+        item = {"id": new_id("i"), "type": "clip", "assetId": logo, "mediaKind": "image", "srcIn": 0, "srcOut": 0,
+                "start": 0.0, "duration": round(total, 3), "opacity": float(kit.get("logoOpacity", 0.9)),
+                "transform": {"x": x, "y": y, "scale": float(kit.get("logoScale", 0.18)), "rotation": 0, "fit": "contain"},
+                "provenance": {"by": actor, "reason": "brand"}}
+        track(tl, "o1")["items"].append(item)
+        added.append(item["id"])
+    style = {k: v for k, v in {"font": kit.get("font"), "color": kit.get("textColor"),
+                               "highlightColor": kit.get("accentColor")}.items() if v}
+    for tr in tl["tracks"]:
+        for it in tr["items"]:
+            if it.get("type") in {"text", "caption"} and style:
+                if it["type"] == "caption" and kit.get("captionPreset"):
+                    it["preset"] = kit["captionPreset"]
+                if not is_pinned(tl, f"items/{it['id']}/style"):
+                    it["style"] = {**(it.get("style") or {}), **style}
+    relayout(tl)
+    return {"added": added}
+
+
+OPS = {"transform", "reframe", "kenBurns", "style", "position", "animation", "keyframes", "transitionIn",
+                "transitionOut", "box"}
+
+
 OBJECT_PROPS = {"transform", "reframe", "kenBurns", "style", "position", "animation", "keyframes", "transitionIn",
                 "transitionOut", "box"}
 
@@ -341,10 +391,56 @@ def op_pin(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     return {}
 
 
+CORNERS = {"tl": (0.13, 0.08), "tr": (0.87, 0.08), "bl": (0.13, 0.92), "br": (0.87, 0.92)}
+
+
+def op_brand(tl: dict, op: dict, actor: str, assets: dict) -> dict:
+    """Apply a brand kit: logo PIP overlay over the whole video, intro/outro clips, caption/text styling.
+    Re-applying replaces the previous brand elements (tagged provenance.reason == 'brand')."""
+    kit = op.get("kit") or {}
+    tl["settings"]["brandKitId"] = kit.get("brandKitId")
+    for tr in tl["tracks"]:
+        tr["items"] = [i for i in tr["items"] if (i.get("provenance") or {}).get("reason") != "brand"
+                       or is_pinned(tl, f"items/{i['id']}")]
+    relayout(tl)
+    main = main_track(tl)
+    added = []
+    for key, at_end in (("introAssetId", False), ("outroAssetId", True)):
+        aid = kit.get(key)
+        if aid and aid in assets:
+            a = assets[aid]
+            dur = float(a.get("durationSec") or 2.5)
+            r = op_add_clip(tl, {"assetId": aid, "srcIn": 0, "srcOut": min(dur, 6), "duration": 2.5,
+                                 "index": len(main["items"]) if at_end else 0, "reason": "brand"}, actor, assets)
+            added.append(r["itemId"])
+    relayout(tl)
+    total = duration(tl)
+    logo = kit.get("logoAssetId")
+    if logo and logo in assets and total > 0:
+        x, y = CORNERS.get(kit.get("logoCorner", "tr"), CORNERS["tr"])
+        item = {"id": new_id("i"), "type": "clip", "assetId": logo, "mediaKind": "image", "srcIn": 0, "srcOut": 0,
+                "start": 0.0, "duration": round(total, 3), "opacity": float(kit.get("logoOpacity", 0.9)),
+                "transform": {"x": x, "y": y, "scale": float(kit.get("logoScale", 0.18)), "rotation": 0, "fit": "contain"},
+                "provenance": {"by": actor, "reason": "brand"}}
+        track(tl, "o1")["items"].append(item)
+        added.append(item["id"])
+    style = {k: v for k, v in {"font": kit.get("font"), "color": kit.get("textColor"),
+                               "highlightColor": kit.get("accentColor")}.items() if v}
+    for tr in tl["tracks"]:
+        for it in tr["items"]:
+            if it.get("type") in {"text", "caption"} and style:
+                if it["type"] == "caption" and kit.get("captionPreset"):
+                    it["preset"] = kit["captionPreset"]
+                if not is_pinned(tl, f"items/{it['id']}/style"):
+                    it["style"] = {**(it.get("style") or {}), **style}
+    relayout(tl)
+    return {"added": added}
+
+
 OPS = {
     "add_clip": op_add_clip, "remove": op_remove, "trim": op_trim, "split": op_split, "move": op_move,
     "update": op_update, "add_text": op_add_text, "captions": op_captions, "settings": op_settings,
-    "meta": op_meta, "marker": op_marker, "clear_track": op_clear_track, "pin": op_pin,
+    "meta": op_meta, "marker": op_marker, "clear_track": op_clear_track, "pin": op_pin, "brand": op_brand,
 }
 
 

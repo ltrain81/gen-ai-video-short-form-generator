@@ -3,6 +3,10 @@ import { App } from 'aws-cdk-lib';
 import { AgentStack } from '../lib/agent-stack';
 import { ApiStack } from '../lib/api-stack';
 import { CoreStack } from '../lib/core-stack';
+import { GenerationStack } from '../lib/generation';
+import { pyFunction } from '../lib/python';
+import { Duration } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
 import { IngestStack } from '../lib/ingest-stack';
 import { WebDeployStack, WebStack } from '../lib/web-stack';
 
@@ -27,7 +31,23 @@ const ingest = new IngestStack(app, `${prefix}-Ingest`, {
 const agent = new AgentStack(app, `${prefix}-Agent`, {
   env, prefix, mediaBucket: core.mediaBucket, table: core.table, userPool: core.userPool, ingest,
   bmaModelId: app.node.tryGetContext('bmaModelId') ?? 'openai.gpt-5.6-luna',
+  mode,
 });
+if (mode === 'full' && agent.generation) {
+  new GenerationStack(app, `${prefix}-Generation`, {
+    env, mediaBucket: core.mediaBucket, wiring: agent.generation,
+    poller: (scope: Construct) => {
+      const fn = pyFunction(scope, 'GenPoller', {
+        handler: 'shorts.handlers.gen_poller.handler', environment: { ...agent.commonEnv, DEPLOY_MODE: mode },
+        timeout: Duration.minutes(2), memorySize: 1024, description: 'Polls generation outputs and registers assets',
+      });
+      core.table.grantReadWriteData(fn);
+      core.mediaBucket.grantReadWrite(fn);
+      agent.eventsApi.grantPublish(fn);
+      return fn;
+    },
+  });
+}
 const api = new ApiStack(app, `${prefix}-Api`, {
   env, mode, allowedOrigins: origins, mediaBucket: core.mediaBucket, table: core.table,
   userPool: core.userPool, userPoolClient: core.userPoolClient, ingest, agent,

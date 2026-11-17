@@ -255,14 +255,28 @@ def normalize_image(src: Path, dst: Path, max_side: int = 2048) -> tuple[int, in
     return int(info["width"]), int(info["height"])
 
 
+def has_alpha(src: Path) -> bool:
+    try:
+        fmt = ffprobe(src)["streams"][0].get("pix_fmt", "")
+    except (subprocess.CalledProcessError, KeyError, IndexError):
+        return False
+    return fmt.startswith(("rgba", "bgra", "argb", "abgr", "ya", "yuva", "gbrap", "rgba64"))
+
+
 def prepare_image(src: Path, work: Path, up: Uploader) -> dict:
     img = work / "image.jpg"
     w, h = normalize_image(src, img)
     thumb = work / "thumb.jpg"
     normalize_image(img, thumb, 640)
     key = up.put(img, "image.jpg")
-    return {"kind": "image", "width": w, "height": h, "imageKey": key, "thumbnailKey": up.put(thumb, "thumb.jpg"),
-            "images": [{"index": 0, "key": key, "width": w, "height": h}]}
+    manifest = {"kind": "image", "width": w, "height": h, "imageKey": key, "thumbnailKey": up.put(thumb, "thumb.jpg"),
+                "images": [{"index": 0, "key": key, "width": w, "height": h}]}
+    if has_alpha(src):  # logos/overlays: keep transparency (≤2048 px PNG)
+        png = work / "image.png"
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-frames:v", "1", "-vf",
+             "scale='min(2048,iw)':'min(2048,ih)':force_original_aspect_ratio=decrease,format=rgba", str(png)])
+        manifest["imageAlphaKey"] = up.put(png, "image.png")
+    return manifest
 
 
 def prepare_document(src: Path, work: Path, up: Uploader) -> dict:

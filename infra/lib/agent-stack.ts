@@ -13,6 +13,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { GenerationWiring } from './generation';
 import { IngestStack } from './ingest-stack';
 import { pyFunction } from './python';
 
@@ -23,6 +24,7 @@ export interface AgentStackProps extends StackProps {
   userPool: cognito.IUserPool;
   ingest: IngestStack;
   bmaModelId: string;
+  mode: string;
 }
 
 const AGENT_PACKAGES = ['openai>=3.16', 'aws-bedrock-token-generator>=1.1', 'imageio-ffmpeg>=0.6', 'strands-agents==1.65.0'];
@@ -35,6 +37,9 @@ export class AgentStack extends Stack {
   readonly broker: lambda.Function;
   readonly eventsHttpDomain: string;
   readonly eventsRealtimeDomain: string;
+  readonly generation?: GenerationWiring;
+  readonly commonEnv: Record<string, string>;
+  readonly eventsApi: appsync.EventApi;
 
   constructor(scope: Construct, id: string, props: AgentStackProps) {
     super(scope, id, props);
@@ -76,6 +81,7 @@ export function onSubscribe(ctx) {
     const common = {
       ...props.ingest.sharedEnv,
       EVENTS_HTTP_DOMAIN: this.eventsHttpDomain,
+      DEPLOY_MODE: props.mode,
     };
     const tools = pyFunction(this, 'Tools', {
       handler: 'shorts.handlers.tools_api.handler',
@@ -195,6 +201,14 @@ export function onSubscribe(ctx) {
       actions: ['iam:PassRole'], resources: [sessionRole.roleArn],
       conditions: { StringEquals: { 'iam:PassedToService': 'bedrock-mantle.amazonaws.com' } },
     }));
+
+    // ---------------------------------------------------------------- generation mode (-c mode=full)
+    this.commonEnv = common;
+    this.eventsApi = eventsApi;
+    if (props.mode === 'full') {
+      this.generation = new GenerationWiring(this, 'Generation', props.prefix);
+      for (const fn of [tools, this.broker]) this.generation.wire(fn);
+    }
 
     new CfnOutput(this, 'RuntimeArn', { value: runtimeArn });
     new CfnOutput(this, 'ToolsApiUrl', { value: toolsApi.apiEndpoint });

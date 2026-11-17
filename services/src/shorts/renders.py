@@ -70,6 +70,7 @@ def media_map(timeline: dict, quality: str) -> dict:
         out[aid] = {"url": url, "kind": kind, "width": int(m.get("width") or 0) or None,
                     "height": int(m.get("height") or 0) or None, "hasAudio": bool(m.get("hasAudio", kind != "image")),
                     "audioUrl": sign(m.get("audioKey")),
+                    "originalUrl": sign(m.get("imageAlphaKey") or m.get("imageKey")) if kind == "image" else None,
                     "images": {int(i["index"]): sign(i["key"]) for i in m.get("images", [])}}
     return out
 

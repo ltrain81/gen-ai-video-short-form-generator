@@ -12,10 +12,12 @@ import * as awsui from '@cloudscape-design/design-tokens';
 import type { ClipItem, Item, TextItem, Timeline } from '@shorts/timeline';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { Asset } from '../api/types';
+import type { Asset, BrandKit } from '../api/types';
 import { useI18n } from '../i18n';
 import { fmtDate, fmtTime } from '../util';
 import type { EditOp } from './TimelineStrip';
+import GeneratePanel from './GeneratePanel';
+import { useApp } from '../App';
 
 interface Props {
   projectId: string;
@@ -36,13 +38,15 @@ const CAPTION_PRESETS = ['clean', 'bold', 'karaoke', 'pop', 'boxed', 'minimal'];
 /** Manual (L3/L4) editing panel. Every change is an op → same engine as the AI, auto-pinned. */
 export default function EditorPanel({ projectId, timeline, selected, time, titles, onOps, onRestore, version, disabled }: Props) {
   const { t } = useI18n();
+  const { me } = useApp();
   const [tab, setTab] = useState('inspect');
   useEffect(() => { if (selected) setTab('inspect'); }, [selected?.id]);
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '8px 16px 16px', opacity: disabled ? 0.6 : 1, pointerEvents: disabled ? 'none' : 'auto' }}>
       <Tabs activeTabId={tab} onChange={(e) => setTab(e.detail.activeTabId)} tabs={[
-        { id: 'inspect', label: t('inspector'), content: <Inspector {...{ timeline, selected, time, onOps }} /> },
+        { id: 'inspect', label: t('inspector'), content: <Inspector {...{ timeline, selected, time, onOps, projectId }} /> },
         { id: 'add', label: t('addMedia'), content: <AddMedia {...{ timeline, time, onOps, titles }} /> },
+        ...(me?.features.generation ? [{ id: 'generate', label: t('generateTab'), content: <GeneratePanel {...{ projectId, timeline, time, onOps }} /> }] : []),
         { id: 'versions', label: t('versions'), content: <Versions {...{ projectId, version, onRestore }} /> },
       ]} />
     </div>
@@ -60,7 +64,7 @@ function CommitInput({ value, onCommit, type, placeholder }: { value: string; on
 
 function num(v: string, fallback: number) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 
-function Inspector({ timeline, selected, time, onOps }: Pick<Props, 'timeline' | 'selected' | 'time' | 'onOps'>) {
+function Inspector({ timeline, selected, time, onOps, projectId }: Pick<Props, 'timeline' | 'selected' | 'time' | 'onOps' | 'projectId'>) {
   const { t } = useI18n();
   const pins = timeline.pins.filter((p) => selected && p.startsWith(`items/${selected.id}`));
   const set = (s: Record<string, unknown>, msg = 'edit') => selected && onOps([{ op: 'update', itemId: selected.id, set: s }], msg);
@@ -77,9 +81,7 @@ function Inspector({ timeline, selected, time, onOps }: Pick<Props, 'timeline' |
           <Button iconName="remove" onClick={() => onOps([{ op: 'clear_track', track: 'c1' }], 'remove captions')}>{t('remove')}</Button>
         </SpaceBetween>
       </FormField>
-      <FormField label={t('title')}>
-        <CommitInput value={timeline.meta.title ?? ''} onCommit={(v) => onOps([{ op: 'meta', set: { title: v } }], 'title')} />
-      </FormField>
+      <MetadataEditor timeline={timeline} time={time} onOps={onOps} projectId={projectId} />
     </SpaceBetween>
   );
   if (!selected) {
@@ -113,6 +115,34 @@ function Inspector({ timeline, selected, time, onOps }: Pick<Props, 'timeline' |
             ))}
           </SpaceBetween>
         ) : <Button onClick={() => onOps([{ op: 'pin', path: `items/${selected.id}`, pinned: true }], 'pin')}>{t('pinItem')}</Button>}
+      </FormField>
+    </SpaceBetween>
+  );
+}
+
+function MetadataEditor({ timeline, time, onOps, projectId }: Pick<Props, 'timeline' | 'time' | 'onOps' | 'projectId'>) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const m = timeline.meta;
+  const suggest = async () => {
+    setBusy(true);
+    try {
+      const s = await api.suggestMetadata(projectId);
+      onOps([{ op: 'meta', set: { title: s.title, description: s.description, hashtags: s.hashtags } }], 'AI metadata');
+    } finally { setBusy(false); }
+  };
+  return (
+    <SpaceBetween size="s">
+      <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+        <Box variant="awsui-key-label">{t('metadata')}</Box>
+        <Button variant="inline-link" iconName="gen-ai" loading={busy} onClick={suggest}>{t('aiSuggest')}</Button>
+      </SpaceBetween>
+      <FormField label={t('title')}><CommitInput value={m.title ?? ''} onCommit={(v) => onOps([{ op: 'meta', set: { title: v } }], 'title')} /></FormField>
+      <FormField label={t('description')}><CommitInput value={m.description ?? ''} onCommit={(v) => onOps([{ op: 'meta', set: { description: v } }], 'description')} /></FormField>
+      <FormField label={t('hashtags')}><CommitInput value={(m.hashtags ?? []).join(' ')}
+        onCommit={(v) => onOps([{ op: 'meta', set: { hashtags: v.split(/[\s,]+/).filter(Boolean).map((h) => (h.startsWith('#') ? h : `#${h}`)) } }], 'hashtags')} /></FormField>
+      <FormField label={t('thumbnail')} description={m.thumbnailAt != null ? `${fmtTime(m.thumbnailAt)}` : '—'}>
+        <Button onClick={() => onOps([{ op: 'meta', set: { thumbnailAt: Number(time.toFixed(2)) } }], 'thumbnail')}>{t('setThumbnail')}</Button>
       </FormField>
     </SpaceBetween>
   );
@@ -199,8 +229,13 @@ function TextInspector({ x, set }: { x: TextItem; set: (s: Record<string, unknow
 function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 'time' | 'onOps' | 'titles'>) {
   const { t } = useI18n();
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [kits, setKits] = useState<BrandKit[]>([]);
+  const [kit, setKit] = useState<string | null>(timeline.settings.brandKitId ?? null);
   const [text, setText] = useState('');
-  useEffect(() => { api.assets().then((a) => setAssets(a.filter((x) => x.status === 'ready'))).catch(() => undefined); }, []);
+  useEffect(() => {
+    api.assets().then((a) => setAssets(a.filter((x) => x.status === 'ready'))).catch(() => undefined);
+    api.brandKits().then(setKits).catch(() => undefined);
+  }, []);
   const main = timeline.tracks.find((tr) => tr.kind === 'video');
   return (
     <SpaceBetween size="m">
@@ -210,6 +245,15 @@ function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 't
           <Button disabled={!text.trim()} onClick={() => { onOps([{ op: 'add_text', text, start: time, duration: 3, role: 'title' }], 'add text'); setText(''); }}>{t('addAtPlayhead')}</Button>
         </SpaceBetween>
       </FormField>
+      {kits.length > 0 && (
+        <FormField label={t('brandKit')}>
+          <SpaceBetween direction="horizontal" size="xs">
+            <Select selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : null} placeholder={t('brandKit')}
+              options={kits.map((k) => ({ value: k.brandKitId, label: k.name }))} onChange={(e) => setKit(e.detail.selectedOption.value ?? null)} />
+            <Button disabled={!kit} onClick={() => onOps([{ op: 'brand', brandKitId: kit }], 'brand kit')}>{t('apply')}</Button>
+          </SpaceBetween>
+        </FormField>
+      )}
       <Box variant="awsui-key-label">{t('fromArchive')}</Box>
       {assets.map((a) => (
         <div key={a.assetId} style={{ display: 'flex', gap: 10, alignItems: 'center', borderBottom: `1px solid ${awsui.colorBorderDividerDefault}`, paddingBottom: 8 }}>

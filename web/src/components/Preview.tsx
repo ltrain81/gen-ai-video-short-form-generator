@@ -185,7 +185,17 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
           {mainItem?.mediaKind === 'image' && imageEl(mainItem)}
           <video ref={overlayRef} muted playsInline preload="auto"
             style={overlayItem?.mediaKind === 'video' ? mediaStyle(overlayItem, srcTime(overlayItem, time), 'cover') : { display: 'none' }} />
-          {overlayItem?.mediaKind === 'image' && imageEl(overlayItem)}
+          {overlay?.items.filter((o) => o.type === 'clip' && time >= o.start && time < o.start + o.duration).map((o0) => {
+            const o = o0 as ClipItem;
+            const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform);
+            const sc = Number(tf.scale ?? 1);
+            if (o.mediaKind !== 'image') return null;
+            if (sc >= 0.999 && !o.transform) return <div key={o.id} style={{ position: 'absolute', inset: 0 }}>{imageEl(o)}</div>;
+            const m = media[o.assetId];
+            return <img key={o.id} src={m?.imageUrl ?? m?.thumbnailUrl} alt="" style={{
+              position: 'absolute', width: `${sc * 100}%`, left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`,
+              transform: 'translate(-50%, -50%)', opacity: o.opacity ?? 1, objectFit: 'contain' }} />;
+          })}
           <audio ref={musicRef} preload="auto" />
           {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x0) => {
             const x = { ...x0, position: asPos(x0.position, 0.2), style: { size: 0.05, weight: 800, color: '#FFFFFF', ...asObj<TextItem['style']>(x0.style) } as TextItem['style'] };

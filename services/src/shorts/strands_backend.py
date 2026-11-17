@@ -11,23 +11,12 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 
 from . import agent_tools
 from .auth import Principal
 from .config import get_config
 
 log = logging.getLogger(__name__)
-SKILLS_DIR = Path(__file__).parent / "skills"
-
-
-def _skills() -> dict[str, tuple[str, str]]:
-    out = {}
-    for f in sorted(SKILLS_DIR.glob("*/SKILL.md")):
-        text = f.read_text()
-        desc = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("description:")), "")
-        out[f.parent.name] = (desc, text.split("---", 2)[-1].strip())
-    return out
 
 
 def _tools(ctx: agent_tools.ToolContext, relay) -> list:
@@ -55,24 +44,7 @@ def _tools(ctx: agent_tools.ToolContext, relay) -> list:
         return PythonAgentTool(name, {"name": name, "description": spec["description"],
                                       "inputSchema": {"json": spec["inputSchema"]}}, fn)
 
-    tools = [make(n, s) for n, s in agent_tools.TOOLS.items()]
-    skills = _skills()
-
-    def list_skills(tool_use, **_kw):
-        return {"toolUseId": tool_use["toolUseId"], "status": "success",
-                "content": [{"text": json.dumps({k: v[0] for k, v in skills.items()}, ensure_ascii=False)}]}
-
-    def read_skill(tool_use, **_kw):
-        name = (tool_use.get("input") or {}).get("name", "")
-        body = skills.get(name, ("", f"Unknown skill {name}; call list_skills"))[1]
-        return {"toolUseId": tool_use["toolUseId"], "status": "success", "content": [{"text": body}]}
-
-    tools.append(PythonAgentTool("list_skills", {"name": "list_skills", "description": "List editing skills (genre/format playbooks).",
-                                                 "inputSchema": {"json": {"type": "object", "properties": {}}}}, list_skills))
-    tools.append(PythonAgentTool("read_skill", {"name": "read_skill", "description": "Read one editing skill playbook before applying it.",
-                                                "inputSchema": {"json": {"type": "object", "properties": {"name": {"type": "string"}},
-                                                                          "required": ["name"]}}}, read_skill))
-    return tools
+    return [make(n, s) for n, s in agent_tools.TOOLS.items()]
 
 
 def run_turn(p: Principal, project: dict, user_input: str, relay) -> None:

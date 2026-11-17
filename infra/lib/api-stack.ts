@@ -47,6 +47,7 @@ export class ApiStack extends Stack {
     props.mediaBucket.grantReadWrite(fn);
     props.ingest.grantModels(fn);
     props.agent.broker.grantInvoke(fn);
+    props.agent.generation?.wire(fn);
     // Re-analysis / language layer dispatch from the API.
     props.ingest.modelQueue.grantSendMessages(fn);
     props.ingest.ingestQueue.grantSendMessages(fn);

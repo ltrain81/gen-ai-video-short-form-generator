@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AWS Shorts V2 — architecture</title>
+<!-- Rendered to architecture-light.png / architecture-dark.png by render.mjs (Playwright). -->
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --surface-2: #f3f2ef; --border: #dedcd6;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974; --edge: #8a8984;
+    /* categorical identity, fixed order (validated: light) */
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --surface-2: #242422; --border: #3a3936;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #94938b; --edge: #8f8e86;
+    /* same hues, stepped for the dark surface (validated: dark) */
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c;
+  }
+  html, body { margin: 0; }
+  body { font-family: "Inter", "Helvetica Neue", Arial, "Apple SD Gothic Neo", sans-serif; }
+  .viz-root { background: var(--surface-1); color: var(--text-primary); width: 1680px; padding: 28px 32px 24px; box-sizing: border-box; }
+  h1 { font-size: 26px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 14px; margin: 0 0 16px; }
+  .legend { display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .legend .line { width: 22px; height: 0; border-top: 2px solid var(--edge); border-radius: 0; }
+  .legend .dash { border-top-style: dashed; }
+  svg text { font-family: inherit; }
+  .lane-title { font-size: 13px; font-weight: 700; fill: var(--text-secondary); letter-spacing: 0.04em; text-transform: uppercase; }
+  .node-title { font-size: 15px; font-weight: 650; fill: var(--text-primary); }
+  .node-sub { font-size: 12px; fill: var(--text-secondary); }
+  .edge-label { font-size: 11.5px; fill: var(--text-secondary); }
+  .note { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+  <h1>AWS Shorts V2 — AI Video Editor</h1>
+  <p class="sub">Chat with an AI editor or edit by hand on the same timeline · archive search · render · NLE export · optional generation</p>
+  <div class="legend" id="legend"></div>
+  <svg id="d" width="1616" height="900" viewBox="0 0 1616 900" role="img" aria-label="Architecture diagram"></svg>
+  <p class="note">Every REST call carries a verified Cognito JWT with per-action ACL; the tools API accepts only the AgentCore Runtime role plus a live
+  session binding (BMA environment id → user, project). Media is private; browsers receive short-lived presigned URLs after the ACL check.</p>
+</div>
+<script>
+const LANES = [
+  { id: 'fe', name: 'Frontend', color: 'var(--s1)', x: 150, y: 520, w: 250, h: 230 },
+  { id: 'api', name: 'API & realtime', color: 'var(--s4)', x: 440, y: 20, w: 250, h: 470 },
+  { id: 'ai', name: 'AI editor', color: 'var(--s6)', x: 730, y: 20, w: 520, h: 470 },
+  { id: 'ing', name: 'Ingest & render', color: 'var(--s2)', x: 440, y: 520, w: 810, h: 360 },
+  { id: 'mod', name: 'Models', color: 'var(--s5)', x: 1290, y: 20, w: 310, h: 560 },
+  { id: 'data', name: 'Data', color: 'var(--s3)', x: 1290, y: 610, w: 310, h: 270 },
+];
+const W = 210, H = 62;
+const N = {
+  user:   { lane: null, x: 10, y: 60, t: 'Editors', s: 'browser' },
+  cdn:    { lane: 'fe', x: 170, y: 570, t: 'CloudFront + S3', s: 'React · Cloudscape SPA' },
+  cog:    { lane: 'fe', x: 170, y: 670, t: 'Amazon Cognito', s: 'users · OIDC/SAML' },
+  http:   { lane: 'api', x: 460, y: 70, t: 'API Gateway', s: 'HTTP API · Cognito JWT' },
+  apifn:  { lane: 'api', x: 460, y: 190, t: 'API Lambda', s: 'archive · ACL · ops · renders' },
+  ev:     { lane: 'api', x: 460, y: 390, t: 'AppSync Events', s: 'per-user live channels' },
+  broker: { lane: 'ai', x: 750, y: 190, t: 'Session broker', s: 'Lambda · one turn' },
+  bma:    { lane: 'ai', x: 1020, y: 70, t: 'Bedrock Managed Agents', s: 'OpenAI Codex harness' },
+  acr:    { lane: 'ai', x: 1020, y: 190, t: 'AgentCore Runtime', s: 'microVM · skills · MCP proxy' },
+  tapi:   { lane: 'ai', x: 1020, y: 300, t: 'Tools API', s: 'AWS_IAM · runtime role only' },
+  tools:  { lane: 'ai', x: 1020, y: 400, t: 'Agent tools', s: 'search · look · framing · edit' },
+  strands:{ lane: 'ai', x: 750, y: 300, t: 'Strands fallback', s: 'same tools · Bedrock Converse' },
+  eb:     { lane: 'ing', x: 460, y: 570, t: 'EventBridge → SQS', s: 'S3 Object Created' },
+  coord:  { lane: 'ing', x: 750, y: 570, t: 'Coordinator', s: 'Lambda · state in DynamoDB' },
+  worker: { lane: 'ing', x: 750, y: 690, t: 'Media worker', s: 'Fargate · ffmpeg · libass' },
+  mw:     { lane: 'ing', x: 1020, y: 570, t: 'Model workers', s: 'Lambda · poller' },
+  gen:    { lane: 'ing', x: 1020, y: 790, t: 'Generation (optional)', s: 'SageMaker async · scale to 0' },
+  render: { lane: 'ing', x: 460, y: 790, t: 'Renders & export', s: 'MP4 · SRT/VTT · OTIO/FCPXML' },
+  peg:    { lane: 'mod', x: 1340, y: 70, t: 'Pegasus 1.5', s: 'video understanding' },
+  mar:    { lane: 'mod', x: 1340, y: 170, t: 'Marengo 3.0', s: 'multimodal embeddings' },
+  oai:    { lane: 'mod', x: 1340, y: 270, t: 'OpenAI on Bedrock', s: 'agent · vision · framing' },
+  tr:     { lane: 'mod', x: 1340, y: 370, t: 'Amazon Transcribe', s: 'word timestamps' },
+  oss:    { lane: 'mod', x: 1340, y: 470, t: 'Open models', s: 'Z-Image · Qwen-Edit · Wan 2.2' },
+  s3:     { lane: 'data', x: 1340, y: 650, t: 'S3 media', s: 'originals · proxies · renders' },
+  ddb:    { lane: 'data', x: 1340, y: 735, t: 'DynamoDB', s: 'single table · ACL · timelines' },
+  vec:    { lane: 'data', x: 1340, y: 820, t: 'S3 Vectors', s: 'index per tenant' },
+};
+// [from, to, label, dashed, fromSide, toSide]
+const E = [
+  ['user', 'cdn', 'app', false, 'b', 'l'], ['user', 'cog', 'sign-in', true, 'b', 'l'], ['user', 'http', 'REST · chat', false],
+  ['http', 'apifn', '', false, 'b', 't'], ['ev', 'user', 'live events', true, 'l', 'r'],
+  ['apifn', 'broker', 'chat turn', false], ['broker', 'bma', '', false], ['bma', 'acr', '', false, 'b', 't'],
+  ['acr', 'tapi', 'SigV4 + binding', false, 'b', 't'], ['tapi', 'tools', '', false, 'b', 't'],
+  ['broker', 'strands', 'fallback', true, 'b', 't'], ['broker', 'ev', '', true, 'b', 'r'],
+  ['tools', 'oai', '', false], ['tools', 'mar', '', false], ['bma', 'oai', '', false],
+  ['s3', 'eb', 'upload', false, 'l', 'b'], ['eb', 'coord', '', false], ['coord', 'worker', 'prepare · render', false, 'b', 't'],
+  ['coord', 'mw', '', false], ['mw', 'peg', '', false], ['mw', 'tr', '', false], ['mw', 'vec', '', false, 'r', 'l'],
+  ['worker', 's3', '', false, 'r', 'l'], ['worker', 'render', '', false, 'l', 'r'], ['tools', 'gen', 'generate (confirmed)', true, 'b', 't'],
+  ['gen', 'oss', '', true, 'r', 'l'],
+];
+const svg = document.getElementById('d');
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs, parent = svg) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); parent.appendChild(e); return e; };
+const defs = el('defs', {});
+const m = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--edge)' }, m);
+
+for (const l of LANES) {
+  el('rect', { x: l.x, y: l.y, width: l.w, height: l.h, rx: 10, fill: 'var(--surface-2)', stroke: 'var(--border)' });
+  el('rect', { x: l.x, y: l.y + 12, width: 4, height: 24, rx: 2, fill: l.color });
+  const t = el('text', { x: l.x + 14, y: l.y + 30, class: 'lane-title' }); t.textContent = l.name;
+}
+const port = (n, side) => {
+  const p = N[n];
+  if (n === 'user') return { r: [p.x + 92, p.y + 40], l: [p.x, p.y + 40], t: [p.x + 50, p.y], b: [p.x + 50, p.y + 100] }[side];
+  return { r: [p.x + W, p.y + H / 2], l: [p.x, p.y + H / 2], t: [p.x + W / 2, p.y], b: [p.x + W / 2, p.y + H] }[side];
+};
+for (const [a, b, label, dashed, fs, ts] of E) {
+  const pa = N[a], pb = N[b];
+  const fside = fs ?? (pb.x > pa.x + W / 2 ? 'r' : pb.x + W / 2 < pa.x ? 'l' : pb.y > pa.y ? 'b' : 't');
+  const tside = ts ?? (fside === 'r' ? 'l' : fside === 'l' ? 'r' : fside === 'b' ? 't' : 'b');
+  const [x1, y1] = port(a, fside), [x2, y2] = port(b, tside);
+  const horiz = (s) => s === 'l' || s === 'r';
+  const k = 0.45;
+  const c1 = horiz(fside) ? [x1 + (x2 - x1) * k, y1] : [x1, y1 + (y2 - y1) * k];
+  const c2 = horiz(tside) ? [x2 - (x2 - x1) * k, y2] : [x2, y2 - (y2 - y1) * k];
+  el('path', { d: `M${x1},${y1} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${x2},${y2}`, fill: 'none', stroke: 'var(--edge)',
+    'stroke-width': 2, 'stroke-dasharray': dashed ? '6 5' : '', 'marker-end': 'url(#arrow)', opacity: 0.9 });
+  if (label) {
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 6;
+    const t = el('text', { x: mx, y: my, 'text-anchor': 'middle', class: 'edge-label' }); t.textContent = label;
+    const bb = t.getBBox();
+    const bg = el('rect', { x: bb.x - 4, y: bb.y - 1, width: bb.width + 8, height: bb.height + 2, rx: 3, fill: 'var(--surface-1)', opacity: 0.92 });
+    svg.insertBefore(bg, t);
+  }
+}
+for (const [id, n] of Object.entries(N)) {
+  const lane = LANES.find((l) => l.id === n.lane);
+  const g = el('g', {});
+  if (id === 'user') {
+    el('circle', { cx: n.x + 50, cy: n.y + 10, r: 14, fill: 'none', stroke: 'var(--text-secondary)', 'stroke-width': 2 }, g);
+    el('path', { d: `M${n.x + 24},${n.y + 52} q26,-30 52,0`, fill: 'none', stroke: 'var(--text-secondary)', 'stroke-width': 2 }, g);
+    const t = el('text', { x: n.x + 50, y: n.y + 76, 'text-anchor': 'middle', class: 'node-title' }, g); t.textContent = n.t;
+    const s = el('text', { x: n.x + 50, y: n.y + 94, 'text-anchor': 'middle', class: 'node-sub' }, g); s.textContent = n.s;
+    N.user = { ...n, x: n.x, y: n.y };
+    continue;
+  }
+  el('rect', { x: n.x, y: n.y, width: W, height: H, rx: 8, fill: 'var(--surface-1)', stroke: 'var(--border)' }, g);
+  el('rect', { x: n.x, y: n.y + 8, width: 4, height: H - 16, rx: 2, fill: lane.color }, g);
+  const t = el('text', { x: n.x + 16, y: n.y + 26, class: 'node-title' }, g); t.textContent = n.t;
+  const s = el('text', { x: n.x + 16, y: n.y + 46, class: 'node-sub' }, g); s.textContent = n.s;
+}
+// user node ports: treat as a 100x100 box
+
+const legend = document.getElementById('legend');
+legend.innerHTML = LANES.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') +
+  '<span><i class="line"></i>request / data</span><span><i class="line dash"></i>async · optional · fallback</span>';
+</script>
+</body>
+</html>

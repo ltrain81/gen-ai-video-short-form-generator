@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import acl, ddb, events, frames, ingest, models, projects, search, storage, timeline_ops
+from . import acl, ddb, events, frames, ingest, models, projects, recipes, search, storage, timeline_ops
 from .auth import Principal
 from .config import get_config
 
@@ -131,8 +131,11 @@ def get_context(ctx: ToolContext, _args: dict) -> ToolResult:
             assets.append({k: a.get(k) for k in ("assetId", "kind", "aiTitle", "title", "durationSec", "width",
                                                  "height", "pageCount", "status", "aiSummary")})
     tenant = ddb.get(f"TENANT#{ctx.principal.tenant_id}", "META") or {}
+    brand = ddb.get(f"TENANT#{ctx.principal.tenant_id}", f"BRAND#{project['brandKitId']}") if project.get("brandKitId") else None
     return ToolResult({"project": {"title": project.get("title"), "synopsis": project.get("synopsis"),
-                                   "version": project["currentVersion"], "aspect": tl["settings"]["aspect"]},
+                                   "version": project["currentVersion"], "aspect": tl["settings"]["aspect"],
+                                   "recipe": project.get("recipe"), "recipeParams": project.get("recipeParams")},
+                       "brandKit": ({k: v for k, v in brand.items() if k not in {"PK", "SK"}} if brand else None),
                        "workspaceLanguage": ingest.LANGUAGES.get(tenant.get("language", "ko"), "Korean"),
                        "attachedAssets": assets, "timeline": timeline_ops.summarize(tl),
                        "preferences": (ddb.get(f"USER#{ctx.principal.sub}", "PREFS") or {}).get("prefs", {})})
@@ -371,7 +374,9 @@ def edit_timeline(ctx: ToolContext, args: dict) -> ToolResult:
     tl = projects.load_timeline(project)
     ops = list(args.get("ops") or [])[:200]
     ids = {o["assetId"] for o in ops if o.get("assetId")} | {
-        i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
+        i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")} | {
+        o["kit"][k] for o in ops if o.get("op") == "brand" and isinstance(o.get("kit"), dict)
+        for k in ("logoAssetId", "introAssetId", "outroAssetId") if o["kit"].get(k)}
     accessible = acl.accessible_asset_ids(ctx.principal)
     assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)
               if a.get("status") == "ready"}
@@ -418,3 +423,69 @@ def remember(ctx: ToolContext, args: dict) -> ToolResult:
     prefs[str(args["key"])[:64]] = str(args["value"])[:500]
     ddb.put({"PK": f"USER#{ctx.principal.sub}", "SK": "PREFS", "prefs": dict(list(prefs.items())[-50:])})
     return ToolResult({"saved": True})
+
+
+# ================================================================== skills / recipes / brand
+@tool("list_skills", "List editing skills (built-in + this workspace's own playbooks) with one-line descriptions.", {})
+def list_skills(ctx: ToolContext, _args: dict) -> ToolResult:
+    return ToolResult([{"name": s["name"], "description": s["description"], "workspace": not s["builtin"]}
+                       for s in recipes.list_skills(ctx.principal.tenant_id)])
+
+
+@tool("read_skill", "Read one skill playbook before applying it. Workspace skills override built-ins of the same name.",
+      {"name": {"type": "string"}}, ["name"])
+def read_skill(ctx: ToolContext, args: dict) -> ToolResult:
+    sk = recipes.get_skill(ctx.principal.tenant_id, args["name"])
+    if not sk:
+        raise ValueError(f"Unknown skill {args['name']}; call list_skills")
+    return ToolResult({"name": sk["name"], "body": sk["body"]})
+
+
+@tool("apply_brand_kit", "Apply the project's (or a named) brand kit: logo overlay, intro/outro, caption & text styling. "
+      "Safe to call again after edits (replaces previous brand elements).",
+      {"brandKitId": {"type": "string", "description": "Defaults to the project's brand kit"}})
+def apply_brand_kit(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import brand
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "edit")
+    kit = brand.resolve(ctx.principal, args.get("brandKitId") or project.get("brandKitId"))
+    return edit_timeline(ctx, {"ops": [{"op": "brand", "kit": kit}], "message": f"brand kit {kit.get('name', '')}"})
+
+
+# ================================================================== generation (mode=full)
+@tool("estimate_generation", "Estimate time and cost of generating media (GPU cold starts included). Always show the "
+      "estimate to the user with ask_user kind=confirm before generate_media.",
+      {"kind": {"type": "string", "enum": ["image", "image_edit", "video", "speech", "music"]},
+       "seconds": {"type": "number"}, "provider": {"type": "string", "enum": ["voxcpm", "polly", "elevenlabs"]}}, ["kind"])
+def estimate_generation(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import generation
+    if not generation.enabled():
+        return ToolResult({"available": False, "reason": "Generation mode is not deployed in this environment"})
+    return ToolResult(generation.estimate(args["kind"], args))
+
+
+@tool("generate_media",
+      "Generate a new asset when the archive has nothing suitable: image (text→image), image_edit (keep a character/"
+      "product consistent from reference images), video (text/image→5 s clip), speech (voiceover), music. ONLY after the "
+      "user confirmed the estimate (set userConfirmed=true). Never use photos of real people as references. The result "
+      "becomes an archive asset (ai_generated) and is analyzed like other footage; poll list_generation_jobs.",
+      {"kind": {"type": "string", "enum": ["image", "image_edit", "video", "speech", "music"]},
+       "prompt": {"type": "string", "description": "Visual/music description, or the narration text for speech"},
+       "referenceAssetIds": {"type": "array", "items": {"type": "string"}},
+       "aspect": {"type": "string"}, "seconds": {"type": "number"}, "voice": {"type": "string"},
+       "provider": {"type": "string", "enum": ["voxcpm", "polly", "elevenlabs"]},
+       "userConfirmed": {"type": "boolean"}}, ["kind", "prompt", "userConfirmed"])
+def generate_media(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import generation
+    if not args.get("userConfirmed"):
+        raise ValueError("Ask the user to confirm the estimate first (ask_user kind=confirm), then retry with userConfirmed=true")
+    params = {k: v for k, v in args.items() if k not in {"kind", "userConfirmed"}}
+    if args["kind"] == "speech":
+        params["text"] = params.pop("prompt")
+    return ToolResult(generation.start(ctx.principal, ctx.project_id, args["kind"], params))
+
+
+@tool("list_generation_jobs", "Status of this project's generation jobs (assetId appears when done; the asset is "
+      "usable once its status is ready).", {})
+def list_generation_jobs(ctx: ToolContext, _args: dict) -> ToolResult:
+    from . import generation
+    return ToolResult(generation.list_jobs(ctx.project_id))

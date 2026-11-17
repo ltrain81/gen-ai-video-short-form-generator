@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, broker, ddb, ingest, projects, search, storage
+from . import acl, broker, ddb, ingest, projects, recipes, search, storage
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
@@ -321,7 +321,7 @@ def asset_media(req: Request):
     out = {"kind": m["kind"], "durationSec": m.get("durationSec"), "width": m.get("width"), "height": m.get("height"),
            "fps": m.get("fps"), "proxyUrl": sign(m.get("proxyKey")), "scrubUrl": sign(m.get("scrubKey")),
            "audioUrl": sign(m.get("audioKey")), "waveformUrl": sign(m.get("waveformKey")),
-           "thumbnailUrl": sign(m.get("thumbnailKey")), "imageUrl": sign(m.get("imageKey")),
+           "thumbnailUrl": sign(m.get("thumbnailKey")), "imageUrl": sign(m.get("imageAlphaKey") or m.get("imageKey")),
            "expiresIn": URL_TTL}
     if m.get("sprites"):
         out["sprites"] = {**{k: v for k, v in m["sprites"].items() if k != "sheets"},
@@ -600,6 +600,87 @@ def search_archive(req: Request):
     return results
 
 
+# ================================================================== recipes & skills
+@router.route("GET", "/recipes")
+def get_recipes(req: Request):
+    return recipes.list_recipes(req.principal.tenant_id)
+
+
+@router.route("PUT", "/recipes/{recipeId}")
+def put_recipe(req: Request):
+    item = recipes.put_recipe(req.principal.tenant_id, req.params["recipeId"], req.body, req.principal.sub)
+    audit(req.principal, "recipe.put", f"RECIPE#{req.params['recipeId']}")
+    return item
+
+
+@router.route("DELETE", "/recipes/{recipeId}")
+def delete_recipe(req: Request):
+    r = ddb.get(f"TENANT#{req.principal.tenant_id}", f"RECIPE#{req.params['recipeId']}")
+    if not r:
+        raise NotFound("Recipe not found")
+    if r.get("createdBy") != req.principal.sub and not req.principal.is_tenant_admin:
+        raise Forbidden("Only the creator or an admin can delete")
+    ddb.delete(f"TENANT#{req.principal.tenant_id}", f"RECIPE#{req.params['recipeId']}")
+
+
+@router.route("GET", "/skills")
+def get_skills(req: Request):
+    return [{k: v for k, v in sk.items() if k != "body" or not sk.get("builtin")} | {"preview": sk["body"][:300]}
+            for sk in recipes.list_skills(req.principal.tenant_id)]
+
+
+@router.route("GET", "/skills/{name}")
+def get_skill(req: Request):
+    sk = recipes.get_skill(req.principal.tenant_id, req.params["name"])
+    if not sk:
+        raise NotFound("Skill not found")
+    return sk
+
+
+@router.route("PUT", "/skills/{name}")
+def put_skill(req: Request):
+    """Workspace skill (editing playbook) — used by the agent via list_skills/read_skill."""
+    desc, body = req.require("description", "body")
+    item = recipes.put_skill(req.principal.tenant_id, req.params["name"], str(desc), str(body), req.principal.sub)
+    audit(req.principal, "skill.put", f"SKILL#{req.params['name']}")
+    return item
+
+
+@router.route("DELETE", "/skills/{name}")
+def delete_skill(req: Request):
+    sk = ddb.get(f"TENANT#{req.principal.tenant_id}", f"SKILL#{req.params['name']}")
+    if not sk:
+        raise NotFound("Only workspace skills can be deleted")
+    if sk.get("createdBy") != req.principal.sub and not req.principal.is_tenant_admin:
+        raise Forbidden("Only the creator or an admin can delete")
+    ddb.delete(f"TENANT#{req.principal.tenant_id}", f"SKILL#{req.params['name']}")
+
+
+# ================================================================== brand kits
+@router.route("GET", "/brand-kits")
+def get_brand_kits(req: Request):
+    from . import brand
+    return brand.list_kits(req.principal)
+
+
+@router.route("POST", "/brand-kits")
+def create_brand_kit(req: Request):
+    from . import brand
+    return brand.put(req.principal, None, req.body)
+
+
+@router.route("PUT", "/brand-kits/{kitId}")
+def update_brand_kit(req: Request):
+    from . import brand
+    return brand.put(req.principal, req.params["kitId"], req.body)
+
+
+@router.route("DELETE", "/brand-kits/{kitId}")
+def delete_brand_kit(req: Request):
+    from . import brand
+    brand.delete(req.principal, req.params["kitId"])
+
+
 # ================================================================== projects / timelines
 @router.route("GET", "/projects")
 def list_projects(req: Request):
@@ -608,11 +689,22 @@ def list_projects(req: Request):
 
 @router.route("POST", "/projects")
 def create_project(req: Request):
-    aspect = req.body.get("aspect", "9:16")
+    recipe = recipes.get_recipe(req.principal.tenant_id, req.body["recipe"]) if req.body.get("recipe") else None
+    if req.body.get("recipe") and not recipe:
+        raise BadRequest("Unknown recipe")
+    aspect = req.body.get("aspect") or (recipe or {}).get("aspect") or "9:16"
     if aspect not in projects.ASPECTS:
         raise BadRequest(f"aspect must be one of {sorted(projects.ASPECTS)}")
     item = projects.create(req.principal, str(req.body.get("title") or "Untitled")[:200], aspect,
                            str(req.body.get("synopsis", ""))[:4000], [str(a) for a in req.body.get("assetIds", [])])
+    extra = {}
+    if recipe:
+        extra = {"recipe": recipe["id"], "recipeParams": {k: req.body.get(k) for k in ("lengthSec", "captions", "music")
+                                                           if req.body.get(k) is not None}}
+    if req.body.get("brandKitId"):
+        extra["brandKitId"] = str(req.body["brandKitId"])
+    if extra:
+        ddb.update(f"PROJ#{item['projectId']}", "META", extra)
     audit(req.principal, "project.create", f"PROJ#{item['projectId']}")
     return {"projectId": item["projectId"], "currentVersion": 0}
 
@@ -667,6 +759,12 @@ def apply_ops(req: Request):
     ids = {o["assetId"] for o in ops if isinstance(o, dict) and o.get("assetId")} | {
         i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
     accessible = acl.accessible_asset_ids(p)
+    assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)}
+    for o in ops:
+        if isinstance(o, dict) and o.get("op") == "brand":
+            from . import brand
+            o["kit"] = brand.resolve(p, o.get("brandKitId") or project.get("brandKitId"))
+            ids |= {o["kit"].get(k) for k in ("logoAssetId", "introAssetId", "outroAssetId") if o["kit"].get(k)}
     assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids if i in accessible)}
     for o in ops:
         if isinstance(o, dict) and o.get("op") == "captions" and "transcripts" not in o:
@@ -771,19 +869,109 @@ def chat_send(req: Request):
     if req.body.get("attachAssetIds"):
         projects.attach_assets(p, project, [str(a) for a in req.body["attachAssetIds"]])
     turn = uuid.uuid4().hex[:10]
+    agent_text = text
+    if project.get("recipe") and not ddb.query(f"PROJ#{project['projectId']}", "MSG#", limit=1):
+        recipe = recipes.get_recipe(p.tenant_id, project["recipe"])
+        if recipe:  # first turn: expand the chosen format recipe into the agent instruction
+            lang = ingest.tenant_language(p.tenant_id)
+            agent_text = recipes.compose_prompt(recipe, text, project.get("recipeParams") or {}, lang)
     if not broker.try_start(project["projectId"], turn):
         raise Conflict("The agent is still working on the previous message")
     broker.save_message(project["projectId"], "user", text, selection=req.body.get("selection"),
                         questionId=(answer or {}).get("questionId"), turn=turn)
     try:
         boto3.client("lambda").invoke(FunctionName=os.environ["BROKER_FUNCTION"], InvocationType="Event",
-                                      Payload=json.dumps({"projectId": project["projectId"], "sub": p.sub, "text": text,
+                                      Payload=json.dumps({"projectId": project["projectId"], "sub": p.sub, "text": agent_text,
                                                           "selection": req.body.get("selection"), "answer": answer,
                                                           "turn": turn}).encode())
     except Exception:
         broker.finish(project["projectId"])
         raise
     return {"turn": turn, "channel": f"/projects/{project['projectId']}/{p.sub}"}
+
+
+# ================================================================== batches & metadata
+@router.route("POST", "/batches")
+def create_batch(req: Request):
+    from . import batches
+    asset_id, count = req.require("assetId", "count")
+    out = batches.create(req.principal, str(asset_id), int(count), req.body)
+    audit(req.principal, "batch.create", f"ASSET#{asset_id}", {"count": int(count)})
+    return out
+
+
+@router.route("GET", "/batches")
+def list_batches(req: Request):
+    from . import batches
+    return batches.list_for(req.principal)
+
+
+@router.route("GET", "/batches/{batchId}")
+def get_batch(req: Request):
+    from . import batches
+    return batches.get(req.principal, req.params["batchId"])
+
+
+@router.route("POST", "/projects/{projectId}/metadata/suggest")
+def suggest_metadata(req: Request):
+    from . import models
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    tl = projects.load_timeline(project)
+    texts = [i.get("text") or " ".join(w["w"] for w in i.get("words", [])) for t in tl["tracks"] for i in t["items"]
+             if i.get("type") in {"text", "caption"}]
+    reasons = [(i.get("provenance") or {}).get("reason") for t in tl["tracks"] for i in t["items"] if i.get("provenance")]
+    ids = {i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
+    summaries = [a.get("aiSummary") for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids) if a.get("aiSummary")]
+    ctx = json.dumps({"project": project.get("title"), "request": project.get("synopsis"), "recipe": project.get("recipe"),
+                      "sources": summaries[:5], "onScreenText": texts[:80], "editorNotes": [r for r in reasons if r][:30],
+                      "durationSec": round(sum(i["duration"] for i in tl["tracks"][0]["items"]), 1)}, ensure_ascii=False)
+    return models.suggest_metadata(ctx, ingest.LANGUAGES.get(ingest.tenant_language(req.principal.tenant_id), "Korean"))
+
+
+# ================================================================== generation (mode=full)
+@router.route("GET", "/generation/estimate")
+def generation_estimate(req: Request):
+    from . import generation
+    if not generation.enabled():
+        return {"available": False}
+    return generation.estimate(req.query.get("kind", "image"), dict(req.query))
+
+
+@router.route("POST", "/projects/{projectId}/generate")
+def generate(req: Request):
+    from . import generation
+    (kind,) = req.require("kind")
+    params = {k: v for k, v in req.body.items() if k != "kind"}
+    out = generation.start(req.principal, req.params["projectId"], kind, params)
+    audit(req.principal, "generation.start", f"PROJ#{req.params['projectId']}", {"kind": kind})
+    return out
+
+
+@router.route("GET", "/projects/{projectId}/generations")
+def generations(req: Request):
+    from . import generation
+    projects.require_project(req.principal, req.params["projectId"], "view")
+    return generation.list_jobs(req.params["projectId"])
+
+
+@router.route("GET", "/workspace/keys")
+def workspace_keys(req: Request):
+    from . import generation
+    _require_admin(req.principal)
+    return {pv: generation.has_byo_key(req.principal.tenant_id, pv) for pv in ("elevenlabs",)}
+
+
+@router.route("PUT", "/workspace/keys/{provider}")
+def put_workspace_key(req: Request):
+    """Bring-your-own third-party API key (stored in AWS Secrets Manager, never returned)."""
+    from . import generation
+    _require_admin(req.principal)
+    if req.params["provider"] not in {"elevenlabs"}:
+        raise BadRequest("Unsupported provider")
+    (value,) = req.require("value")
+    generation.set_byo_key(req.principal.tenant_id, req.params["provider"], str(value).strip())
+    audit(req.principal, "workspace.key.set", f"TENANT#{req.principal.tenant_id}", {"provider": req.params["provider"]})
+    return {"ok": True}
 
 
 # ================================================================== audit

@@ -39,9 +39,12 @@ is inspectable, every property is editable, and your manual edits are pinned so 
 
 ## Architecture
 
-![AWS Shorts V2 architecture](docs/architecture/architecture.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/architecture-dark.png">
+  <img alt="AWS Shorts V2 architecture" src="docs/architecture/architecture-light.png">
+</picture>
 
-<sub>Generated from [`docs/architecture/diagram.py`](docs/architecture/diagram.py) (`diagrams` + Graphviz, official AWS Architecture Icons). Regenerate: `uv run --with diagrams python docs/architecture/diagram.py`.</sub>
+<sub>Source: [`docs/architecture/architecture.html`](docs/architecture/architecture.html) (HTML/SVG, palette validated for color-vision deficiency in light and dark). Regenerate the PNGs with `node docs/architecture/render.mjs` (Playwright).</sub>
 
 Request flow in short:
 

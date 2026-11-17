@@ -27,6 +27,10 @@ PRESETS = {"preview": {"scale": 0.5, "crf": 30, "preset": "veryfast", "abr": "96
            "final": {"scale": 1.0, "crf": 19, "preset": "medium", "abr": "192k"}}
 
 
+XFADE = {"fade": "fade", "dissolve": "dissolve", "dipToBlack": "fadeblack", "dipToWhite": "fadewhite",
+         "wipeLeft": "wipeleft", "wipeUp": "wipeup", "slideLeft": "slideleft", "zoom": "zoomin", "blur": "hblur"}
+
+
 class RenderError(RuntimeError):
     pass
 
@@ -141,14 +145,16 @@ class Renderer:
             out += ["-c:a", "aac", "-b:a", self.q["abr"], "-ar", "48000", "-ac", "2"]
         return out
 
-    def segment(self, item: dict, out: Path) -> Path:
-        W, H, dur = self.W, self.H, float(item["duration"])
+    def segment(self, item: dict, out: Path, tail: float = 0.0, first: bool = True) -> Path:
+        """Render one item. `tail` extends the clip past its out point (transition handle)."""
+        W, H, dur = self.W, self.H, float(item["duration"]) + tail
         m = self.media.get(item["assetId"])
         if not m:
             raise RenderError(f"Missing media for asset {item['assetId']}")
         fades = []
-        tin = (item.get("transitionIn") or {})
-        fade_in = float(item.get("fadeIn") or (tin.get("duration", 0) if tin.get("type") not in (None, "cut") else 0))
+        tin = as_obj(item.get("transitionIn"))
+        # Transitions between clips are xfades (see render()); only the very first clip fades in from black.
+        fade_in = float(item.get("fadeIn") or (tin.get("duration", 0) if first and tin.get("type") not in (None, "cut") else 0))
         fade_out = float(item.get("fadeOut") or 0)
         if fade_in:
             fades.append(f"fade=t=in:st=0:d={fade_in:.3f}")
@@ -188,6 +194,7 @@ class Renderer:
                 f",aresample=48000,apad,atrim=0:{dur:.3f}[a]"
         else:
             a = f"anullsrc=r=48000:cl=stereo,atrim=0:{dur:.3f}[a]"
+        src_out = src_out + tail * speed
         run([ffmpeg_bin(), "-y", "-loglevel", "error", "-ss", f"{src_in:.3f}", "-t", f"{src_out - src_in:.3f}",
              "-i", m["url"], "-filter_complex", f"{v};{a}", "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}",
              *self._enc(), str(out)])
@@ -291,16 +298,46 @@ class Renderer:
             raise RenderError("The main track is empty")
         total = len(main["items"]) + sum(len(t["items"]) for t in tracks if t["kind"] == "overlay") + 2
         done = 0
+        items = main["items"]
+        # Transition into item i (i>0): xfade over d seconds using a tail handle on item i-1.
+        trans = [None] + [(XFADE.get(as_obj(it.get("transitionIn")).get("type")),
+                           min(1.5, float(as_obj(it.get("transitionIn")).get("duration", 0.4) or 0.4)))
+                          for it in items[1:]]
+        trans = [t if t and t[0] else None for t in trans]
         segs = []
-        for i, it in enumerate(main["items"]):
-            segs.append(self.segment(it, self.work / f"seg_{i:04d}.mp4"))
+        for i, it in enumerate(items):
+            tail = trans[i + 1][1] if i + 1 < len(items) and trans[i + 1] else 0.0
+            segs.append(self.segment(it, self.work / f"seg_{i:04d}.mp4", tail=tail, first=(i == 0)))
             done += 1
-            self.progress(done / total, f"segment {i + 1}/{len(main['items'])}")
-        listfile = self.work / "concat.txt"
-        listfile.write_text("".join(f"file '{p.name}'\n" for p in segs))
+            self.progress(done / total, f"segment {i + 1}/{len(items)}")
         base = self.work / "base.mp4"
-        run([ffmpeg_bin(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listfile),
-             "-c", "copy", str(base)])
+        if not any(trans):
+            listfile = self.work / "concat.txt"
+            listfile.write_text("".join(f"file '{p.name}'\n" for p in segs))
+            run([ffmpeg_bin(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listfile),
+                 "-c", "copy", str(base)])
+        else:
+            # Sequential xfade/acrossfade (or plain concat at cuts). Offsets keep every clip at its timeline start.
+            args, graph, t = [], [], float(items[0]["duration"])
+            for k, p_ in enumerate(segs):
+                args += ["-i", str(p_)]
+                # One timebase/format for every input so xfade and concat can be chained.
+                graph.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={self.fps},format=yuv420p,settb=AVTB[nv{k}]")
+                graph.append(f"[{k}:a]asetpts=PTS-STARTPTS,aresample=48000[na{k}]")
+            v, a = "[nv0]", "[na0]"
+            for i in range(1, len(segs)):
+                tr = trans[i]
+                if tr:
+                    kind, d = tr
+                    graph.append(f"{v}[nv{i}]xfade=transition={kind}:duration={d:.3f}:offset={t:.3f},settb=AVTB[xv{i}]")
+                    graph.append(f"{a}[na{i}]acrossfade=d={d:.3f}[xa{i}]")
+                else:
+                    graph.append(f"{v}{a}[nv{i}][na{i}]concat=n=2:v=1:a=1[cv{i}][xa{i}]")
+                    graph.append(f"[cv{i}]settb=AVTB[xv{i}]")
+                v, a = f"[xv{i}]", f"[xa{i}]"
+                t += float(items[i]["duration"])
+            run([ffmpeg_bin(), "-y", "-loglevel", "error", *args, "-filter_complex", ";".join(graph),
+                 "-map", v, "-map", a, *self._enc(), str(base)])
         duration = sum(float(it["duration"]) for it in main["items"])
 
         inputs = ["-i", str(base)]
@@ -310,13 +347,30 @@ class Renderer:
             if tr["kind"] != "overlay" or tr.get("hidden"):
                 continue
             for j, it in enumerate(tr["items"]):
-                seg = self.segment(it, self.work / f"ov_{tr['id']}_{j:04d}.mp4")
-                done += 1
-                self.progress(done / total, "b-roll")
-                inputs += ["-i", str(seg)]
                 s, e = it["start"], it["start"] + it["duration"]
-                vchain += (f";[{n}:v]setpts=PTS-STARTPTS+{s:.3f}/TB[o{n}];"
-                           f"[{cur}][o{n}]overlay=0:0:eof_action=pass:enable='between(t,{s:.3f},{e:.3f})'[v{n}]")
+                tf = as_obj(it.get("transform"))
+                scale = float(tf.get("scale", 1) or 1)
+                opacity = float(it.get("opacity", 1) if it.get("opacity") is not None else 1)
+                done += 1
+                self.progress(done / total, "overlays")
+                if scale < 0.999 or (it.get("mediaKind") == "image" and tf):
+                    # Picture-in-picture (logos, inserts): positioned/scaled, keeps alpha for PNG logos.
+                    m = self.media.get(it["assetId"]) or {}
+                    if it.get("mediaKind") == "image":
+                        inputs += ["-loop", "1", "-t", f"{it['duration']:.3f}", "-i", m.get("originalUrl") or m.get("url")]
+                    else:
+                        inputs += ["-i", str(self.segment(it, self.work / f"ov_{tr['id']}_{j:04d}.mp4"))]
+                    w = even(self.W * scale)
+                    x, y = float(tf.get("x", 0.5)) * self.W, float(tf.get("y", 0.5)) * self.H
+                    vchain += (f";[{n}:v]format=rgba,scale={w}:-2,colorchannelmixer=aa={opacity:.3f},"
+                               f"setpts=PTS-STARTPTS+{s:.3f}/TB[o{n}];"
+                               f"[{cur}][o{n}]overlay=x='{x:.1f}-w/2':y='{y:.1f}-h/2':eof_action=pass:"
+                               f"enable='between(t,{s:.3f},{e:.3f})'[v{n}]")
+                else:
+                    seg = self.segment(it, self.work / f"ov_{tr['id']}_{j:04d}.mp4")
+                    inputs += ["-i", str(seg)]
+                    vchain += (f";[{n}:v]setpts=PTS-STARTPTS+{s:.3f}/TB[o{n}];"
+                               f"[{cur}][o{n}]overlay=0:0:eof_action=pass:enable='between(t,{s:.3f},{e:.3f})'[v{n}]")
                 cur = f"v{n}"
                 n += 1
         ass = self.work / "text.ass"

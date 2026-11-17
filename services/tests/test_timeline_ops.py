@@ -68,3 +68,29 @@ def test_user_ops_auto_pin_and_agent_respects():
     assert [x["ok"] for x in r] == [False, True, False]
     tl3, _ = T.apply(tl, [{"op": "remove", "itemId": iid}], "user", ASSETS)
     assert tl3["pins"] == []
+
+
+def test_brand_kit_logo_intro_outro_and_reapply():
+    assets = {**ASSETS, "logo": {"kind": "image"}, "intro": {"kind": "video", "durationSec": 3, "width": 1080, "height": 1920}}
+    tl, _ = T.apply(base(), [{"op": "add_clip", "assetId": "v", "srcIn": 0, "srcOut": 10},
+                             {"op": "add_text", "text": "Hi", "start": 0, "duration": 2}], "agent", assets)
+    kit = {"brandKitId": "b1", "logoAssetId": "logo", "logoCorner": "bl", "introAssetId": "intro", "textColor": "#FFD400"}
+    tl, r = T.apply(tl, [{"op": "brand", "kit": kit}], "agent", assets)
+    assert r[0]["ok"] and len(r[0]["added"]) == 2
+    main = T.main_track(tl)["items"]
+    assert main[0]["assetId"] == "intro" and main[0]["duration"] == 3  # whole intro clip (≤ 6 s)
+    logo = T.track(tl, "o1")["items"][0]
+    assert logo["transform"]["x"] == 0.13 and logo["transform"]["y"] == 0.92 and logo["duration"] == 13
+    assert T.track(tl, "t1")["items"][0]["style"]["color"] == "#FFD400"
+    tl, r = T.apply(tl, [{"op": "brand", "kit": kit}], "agent", assets)  # idempotent re-apply
+    assert len(T.main_track(tl)["items"]) == 2 and len(T.track(tl, "o1")["items"]) == 1
+
+
+def test_update_rejects_non_object_style_and_merges_objects():
+    tl, r = T.apply(base(), [{"op": "add_text", "text": "Hi", "start": 0, "duration": 2}], "agent", ASSETS)
+    iid = r[0]["itemId"]
+    _, r = T.apply(tl, [{"op": "update", "itemId": iid, "set": {"style": "bold"}}], "agent", ASSETS)
+    assert not r[0]["ok"]
+    tl, r = T.apply(tl, [{"op": "update", "itemId": iid, "set": {"style": {"color": "#FF0000"}}}], "agent", ASSETS)
+    st = T.track(tl, "t1")["items"][0]["style"]
+    assert r[0]["ok"] and st["color"] == "#FF0000" and st["size"] == 0.05
