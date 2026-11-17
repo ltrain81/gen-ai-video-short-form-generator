@@ -55,7 +55,7 @@ export default function AdminPage() {
           id: 'workspace', label: t('workspace'), content: (
             <Container>
               <FormField label={t('analysisLanguage')} description={t('analysisLanguageHint')}>
-                <Select
+                <Select expandToViewport
                   selectedOption={language ? { value: language, label: me?.languages?.[language] ?? language } : null}
                   options={Object.entries(me?.languages ?? {}).map(([value, label]) => ({ value, label }))}
                   onChange={async (e) => {
@@ -92,7 +92,7 @@ export default function AdminPage() {
                 { id: 'n', header: t('name'), cell: (g) => g.name },
                 {
                   id: 'm', header: t('members'), cell: (g) => (
-                    <Multiselect selectedOptions={(members[g.groupId] ?? []).map((s) => ({ value: s, label: emailOf(s) }))}
+                    <Multiselect expandToViewport selectedOptions={(members[g.groupId] ?? []).map((s) => ({ value: s, label: emailOf(s) }))}
                       options={users.map((u) => ({ value: u.sub, label: u.email ?? u.sub }))}
                       onChange={(e) => setGroupMembers(g.groupId, e.detail.selectedOptions.map((o) => o.value!))}
                       placeholder={t('addMember')} filteringType="auto" />

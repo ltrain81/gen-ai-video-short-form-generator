@@ -866,15 +866,21 @@ def chat_send(req: Request):
     answer = req.body.get("answer")  # {questionId, value}
     if not text and not answer:
         raise BadRequest("text or answer required")
+    attached: list[str] = []
     if req.body.get("attachAssetIds"):
-        projects.attach_assets(p, project, [str(a) for a in req.body["attachAssetIds"]])
+        requested = [str(a) for a in req.body["attachAssetIds"]][:50]
+        merged = projects.attach_assets(p, project, requested)
+        attached = [a for a in requested if a in merged]
+        project = {**project, "assetIds": merged}
     turn = uuid.uuid4().hex[:10]
     agent_text = text
+    if attached:  # tell the agent which footage the user just handed it, in the order they picked it
+        agent_text = f"{text}\n\n[User attached these assets to the project, in this order: {', '.join(attached)}]"
     if project.get("recipe") and not ddb.query(f"PROJ#{project['projectId']}", "MSG#", limit=1):
         recipe = recipes.get_recipe(p.tenant_id, project["recipe"])
         if recipe:  # first turn: expand the chosen format recipe into the agent instruction
             lang = ingest.tenant_language(p.tenant_id)
-            agent_text = recipes.compose_prompt(recipe, text, project.get("recipeParams") or {}, lang)
+            agent_text = recipes.compose_prompt(recipe, agent_text, project.get("recipeParams") or {}, lang)
     if not broker.try_start(project["projectId"], turn):
         raise Conflict("The agent is still working on the previous message")
     broker.save_message(project["projectId"], "user", text, selection=req.body.get("selection"),

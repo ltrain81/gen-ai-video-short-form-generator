@@ -8,9 +8,12 @@ import PromptInput from '@cloudscape-design/components/prompt-input';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Token from '@cloudscape-design/components/token';
+import TokenGroup from '@cloudscape-design/components/token-group';
 import * as awsui from '@cloudscape-design/design-tokens';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '../api/realtime';
+import type { Asset } from '../api/types';
+import AssetPicker from './AssetPicker';
 import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 
@@ -29,7 +32,7 @@ interface Props {
   busy: boolean;
   selectionLabel?: string;
   onClearSelection?: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, attach?: Asset[]) => void;
   onAnswer: (questionId: string, value: unknown, display: string) => void;
   thumbs: Record<string, string | undefined>;
   titles: Record<string, string>;
@@ -56,14 +59,17 @@ const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
 export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header }: Props) {
   const { t } = useI18n();
   const [value, setValue] = useState('');
+  const [attach, setAttach] = useState<Asset[]>([]);
+  const [picker, setPicker] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [entries, busy]);
 
   const send = (text = value) => {
     const v = text.trim();
     if (!v || busy) return;
-    onSend(v);
+    onSend(v, attach.length ? attach : undefined);
     setValue('');
+    setAttach([]);
   };
   const last = entries[entries.length - 1];
   const showSuggestions = !busy && !!suggestions?.length && last?.role === 'assistant' && !last.question;
@@ -99,9 +105,16 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
         <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={() => send()}
           actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || !value.trim()}
           placeholder={busy ? t('agentWorking') : t('chatPlaceholder')} minRows={2} maxRows={8}
-          secondaryContent={selectionLabel ? (
-            <Token label={`${t('selected')}: ${selectionLabel}`} onDismiss={onClearSelection} dismissLabel={t('clear')} />
+          secondaryActions={<Button variant="icon" iconName="folder-open" ariaLabel={t('attachFromArchive')} onClick={() => setPicker(true)} />}
+          secondaryContent={selectionLabel || attach.length ? (
+            <SpaceBetween size="xs">
+              {selectionLabel && <Token label={`${t('selected')}: ${selectionLabel}`} onDismiss={onClearSelection} dismissLabel={t('clear')} />}
+              {attach.length > 0 && <TokenGroup items={attach.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
+                onDismiss={({ detail }) => setAttach(attach.filter((_, i) => i !== detail.itemIndex))} />}
+            </SpaceBetween>
           ) : undefined} />
+        <AssetPicker visible={picker} initial={attach} onDismiss={() => setPicker(false)} confirmText={t('attach')}
+          onConfirm={(a) => { setAttach(a); setPicker(false); }} />
       </div>
     </div>
   );

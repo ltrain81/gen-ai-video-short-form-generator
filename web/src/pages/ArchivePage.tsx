@@ -7,9 +7,12 @@ import ContentLayout from '@cloudscape-design/components/content-layout';
 import FileUpload from '@cloudscape-design/components/file-upload';
 import Header from '@cloudscape-design/components/header';
 import Input from '@cloudscape-design/components/input';
+import FormField from '@cloudscape-design/components/form-field';
 import Link from '@cloudscape-design/components/link';
+import Modal from '@cloudscape-design/components/modal';
 import ProgressBar from '@cloudscape-design/components/progress-bar';
 import SegmentedControl from '@cloudscape-design/components/segmented-control';
+import Select from '@cloudscape-design/components/select';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator, { StatusIndicatorProps } from '@cloudscape-design/components/status-indicator';
 import TextContent from '@cloudscape-design/components/text-content';
@@ -17,10 +20,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
 import { api } from '../api/client';
-import type { Asset, SearchResult } from '../api/types';
+import type { Asset, ProjectSummary, SearchResult } from '../api/types';
 import { uploadFile, UploadProgress } from '../api/upload';
 import { useI18n } from '../i18n';
-import { fileToBase64, fmtBytes, fmtTime } from '../util';
+import { fileToBase64, fmtBytes, fmtTime, mergeOrdered } from '../util';
 
 const STATUS: Record<string, StatusIndicatorProps.Type> = {
   uploading: 'in-progress', queued: 'pending', processing: 'loading', ready: 'success', failed: 'error',
@@ -51,6 +54,26 @@ export default function ArchivePage() {
   const [searching, setSearching] = useState(false);
   const [uploads, setUploads] = useState<Record<string, UploadProgress>>({});
   const pollRef = useRef<number>(undefined);
+  const [picked, setPicked] = useState<Asset[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [target, setTarget] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const openAdd = () => {
+    setAddOpen(true);
+    api.projects().then((p) => { setProjects(p); setTarget(p[0]?.projectId ?? null); }).catch((e) => notify('error', e.message));
+  };
+  const addToProject = async () => {
+    if (!target) return;
+    setAdding(true);
+    try {
+      await api.attachAssets(target, picked.map((a) => a.assetId));
+      navigate(`/studio/${target}`);
+    } catch (e) {
+      notify('error', (e as Error).message);
+      setAdding(false);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -172,6 +195,18 @@ export default function ArchivePage() {
             items={assets}
             loading={loading}
             trackBy="assetId"
+            selectionType="multi"
+            selectedItems={picked}
+            isItemDisabled={(a) => a.status !== 'ready'}
+            onSelectionChange={(e) => setPicked(mergeOrdered(picked, e.detail.selectedItems))}
+            header={<Header counter={picked.length ? `(${picked.length}/${assets.length})` : undefined}
+              description={picked.length ? undefined : t('archiveSelectHint')}
+              actions={picked.length ? (
+                <SpaceBetween direction="horizontal" size="xs">
+                  <Button variant="link" onClick={() => setPicked([])}>{t('clearSelection')}</Button>
+                  <Button onClick={openAdd}>{t('addToProject')}</Button>
+                  <Button variant="primary" iconName="gen-ai" onClick={() => navigate('/', { state: { assets: picked } })}>{t('newProjectWith', { n: picked.length })}</Button>
+                </SpaceBetween>) : undefined}>{t('allAssets')}</Header>}
             cardsPerRow={[{ cards: 1 }, { minWidth: 500, cards: 2 }, { minWidth: 900, cards: 3 }, { minWidth: 1300, cards: 4 }]}
             empty={<Box textAlign="center" color="inherit" padding="xxl"><TextContent><p>{t('noAssets')}</p></TextContent></Box>}
             cardDefinition={{
@@ -196,6 +231,18 @@ export default function ArchivePage() {
           />
         )}
       </SpaceBetween>
+      <Modal visible={addOpen} onDismiss={() => setAddOpen(false)} header={t('addToProject')}
+        footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs">
+          <Button variant="link" onClick={() => setAddOpen(false)}>{t('cancel')}</Button>
+          <Button variant="primary" loading={adding} disabled={!target} onClick={addToProject}>{t('add')} ({picked.length})</Button>
+        </SpaceBetween></Box>}>
+        <FormField label={t('chooseProject')}>
+          <Select expandToViewport filteringType="auto" empty={t('noProjects')}
+            selectedOption={target ? { value: target, label: projects.find((p) => p.projectId === target)?.title } : null}
+            options={projects.map((p) => ({ value: p.projectId, label: p.title, description: p.aspect }))}
+            onChange={(e) => setTarget(e.detail.selectedOption.value ?? null)} />
+        </FormField>
+      </Modal>
     </ContentLayout>
   );
 }

@@ -1,8 +1,6 @@
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
-import Cards from '@cloudscape-design/components/cards';
 import Checkbox from '@cloudscape-design/components/checkbox';
-import Header from '@cloudscape-design/components/header';
 import Link from '@cloudscape-design/components/link';
 import PromptInput from '@cloudscape-design/components/prompt-input';
 import SegmentedControl from '@cloudscape-design/components/segmented-control';
@@ -14,13 +12,13 @@ import * as awsui from '@cloudscape-design/design-tokens';
 import { IconProps } from '@cloudscape-design/components/icon';
 import Icon from '@cloudscape-design/components/icon';
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
+import AssetPicker from '../components/AssetPicker';
 import { api } from '../api/client';
 import type { Asset, BrandKit, ProjectSummary, Recipe } from '../api/types';
 import { useI18n } from '../i18n';
-import { fmtDate, fmtTime } from '../util';
-import { Thumb } from './ArchivePage';
+import { fmtDate } from '../util';
 
 const LENGTHS = [15, 30, 45, 60, 90, 180];
 const CAPTIONS = ['auto', 'clean', 'bold', 'karaoke', 'pop', 'boxed', 'minimal', 'none'];
@@ -32,8 +30,8 @@ export default function StudioPage() {
   const navigate = useNavigate();
   const [value, setValue] = useState('');
   const [aspect, setAspect] = useState('9:16');
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [picked, setPicked] = useState<Asset[]>([]);
+  const location = useLocation();
+  const [picked, setPicked] = useState<Asset[]>(() => (location.state as { assets?: Asset[] } | null)?.assets ?? []);
   const [showPicker, setShowPicker] = useState(false);
   const [recent, setRecent] = useState<ProjectSummary[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -48,7 +46,6 @@ export default function StudioPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.assets().then((a) => setAssets(a.filter((x) => x.status === 'ready'))).catch(() => undefined);
     api.projects().then((p) => setRecent(p.slice(0, 6))).catch(() => undefined);
     api.recipes().then(setRecipes).catch(() => undefined);
     api.brandKits().then(setKits).catch(() => undefined);
@@ -109,18 +106,20 @@ export default function StudioPage() {
             placeholder={recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
             secondaryActions={
               <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                <Button variant="icon" iconName="upload" ariaLabel={t('attachFromArchive')} onClick={() => setShowPicker(!showPicker)} />
+                <Button iconName="folder-open" onClick={() => setShowPicker(true)}>
+                  {picked.length ? `${t('attachFromArchive')} (${picked.length})` : t('attachFromArchive')}
+                </Button>
                 <SegmentedControl selectedId={aspect} onChange={(e) => setAspect(e.detail.selectedId)}
                   options={['9:16', '1:1', '4:5', '16:9'].map((a) => ({ id: a, text: a }))} />
-                <Select selectedOption={{ value: String(length ?? ''), label: length ? (length >= 120 ? `${length / 60}m` : `${length}s`) : t('lengthAuto') }}
+                <Select expandToViewport selectedOption={{ value: String(length ?? ''), label: length ? (length >= 120 ? `${length / 60}m` : `${length}s`) : t('lengthAuto') }}
                   options={[{ value: '', label: t('lengthAuto') }, ...LENGTHS.map((l) => ({ value: String(l), label: l >= 120 ? `${l / 60}m` : `${l}s` }))]}
                   onChange={(e) => setLength(e.detail.selectedOption.value ? Number(e.detail.selectedOption.value) : null)} />
-                <Select selectedOption={{ value: captions, label: captions === 'auto' ? t('captionsAuto') : captions === 'none' ? t('captionsNone') : captions }}
+                <Select expandToViewport selectedOption={{ value: captions, label: captions === 'auto' ? t('captionsAuto') : captions === 'none' ? t('captionsNone') : captions }}
                   options={CAPTIONS.map((c) => ({ value: c, label: c === 'auto' ? t('captionsAuto') : c === 'none' ? t('captionsNone') : c }))}
                   onChange={(e) => setCaptions(e.detail.selectedOption.value!)} />
                 <Checkbox checked={music} onChange={(e) => setMusic(e.detail.checked)}>{t('music')}</Checkbox>
                 {kits.length > 0 && (
-                  <Select selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : { value: '', label: t('noBrandKit') }}
+                  <Select expandToViewport selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : { value: '', label: t('noBrandKit') }}
                     options={[{ value: '', label: t('noBrandKit') }, ...kits.map((k) => ({ value: k.brandKitId, label: k.name }))]}
                     onChange={(e) => setKit(e.detail.selectedOption.value || null)} />
                 )}
@@ -128,12 +127,12 @@ export default function StudioPage() {
             }
             secondaryContent={picked.length ? (
               <SpaceBetween size="xs">
-                <TokenGroup items={picked.map((a) => ({ label: a.displayTitle, dismissLabel: t('remove') }))}
+                <TokenGroup items={picked.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
                   onDismiss={({ detail }) => setPicked(picked.filter((_, i) => i !== detail.itemIndex))} />
                 {canBatch && (
                   <SpaceBetween direction="horizontal" size="xs" alignItems="center">
                     <Toggle checked={batch} onChange={(e) => setBatch(e.detail.checked)}>{t('batchToggle')}</Toggle>
-                    {batch && <Select selectedOption={{ value: String(count), label: `${count}` }}
+                    {batch && <Select expandToViewport selectedOption={{ value: String(count), label: `${count}` }}
                       options={[2, 3, 4, 5, 6, 8, 10].map((n) => ({ value: String(n), label: String(n) }))}
                       onChange={(e) => setCount(Number(e.detail.selectedOption.value))} />}
                   </SpaceBetween>
@@ -141,17 +140,8 @@ export default function StudioPage() {
               </SpaceBetween>
             ) : undefined}
           />
-          {showPicker && (
-            <Cards items={assets} selectionType="multi" selectedItems={picked} onSelectionChange={(e) => setPicked(e.detail.selectedItems)}
-              trackBy="assetId" cardsPerRow={[{ cards: 2 }, { minWidth: 640, cards: 4 }]}
-              header={<Header variant="h3" counter={`(${picked.length}/${assets.length})`}>{t('attachFromArchive')}</Header>}
-              empty={<Box textAlign="center">{t('noAssets')}</Box>}
-              cardDefinition={{
-                header: (a) => <Box fontWeight="bold" variant="small">{a.displayTitle}</Box>,
-                sections: [{ id: 't', content: (a) => <Thumb asset={a} /> },
-                  { id: 'm', content: (a) => <Box variant="small" color="text-body-secondary">{t((a.kind ?? 'other') as never)} {a.durationSec ? `· ${fmtTime(a.durationSec)}` : ''}</Box> }],
-              }} />
-          )}
+          <AssetPicker visible={showPicker} initial={picked} onDismiss={() => setShowPicker(false)}
+            onConfirm={(a) => { setPicked(a); setShowPicker(false); }} />
           {recent.length > 0 && (
             <SpaceBetween size="xxs">
               <Box variant="awsui-key-label">{t('recentProjects')}</Box>

@@ -12,7 +12,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../App';
 import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
-import type { AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
+import type { Asset, AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
 import RendersModal from '../components/RendersModal';
@@ -29,6 +29,11 @@ function fromHistory(m: ChatMessage[]): ChatEntry[] {
   return m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, error: x.error }));
 }
 
+const CHAT_MIN = 320;
+const CHAT_DEFAULT = 440;
+const chatMax = () => Math.max(CHAT_MIN, Math.min(1100, Math.round(window.innerWidth * 0.65)));
+const clampChat = (w: number) => Math.round(Math.min(chatMax(), Math.max(CHAT_MIN, w)));
+
 export default function ProjectPage() {
   const { projectId = '' } = useParams();
   const location = useLocation();
@@ -36,6 +41,16 @@ export default function ProjectPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [project, setProject] = useState<ProjectSummary | null>(null);
+  const [chatW, setChatW] = useState(() => clampChat(Number(localStorage.getItem('chatWidth')) || CHAT_DEFAULT));
+  useEffect(() => { localStorage.setItem('chatWidth', String(chatW)); }, [chatW]);
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const x0 = e.clientX, w0 = chatW;
+    const move = (ev: PointerEvent) => setChatW(clampChat(w0 + (x0 - ev.clientX)));
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [media, setMedia] = useState<Record<string, AssetMedia>>({});
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -150,16 +165,18 @@ export default function ProjectPage() {
       ...(i.type === 'text' ? { text: i.text } : {}) };
   }, [selected]);
 
-  const send = useCallback(async (text: string) => {
-    setEntries((x) => [...x, { id: `u${Date.now()}`, role: 'user', text }]);
+  const send = useCallback(async (text: string, attach?: Asset[]) => {
+    const note = attach?.length ? `\n📎 ${attach.map((a) => a.displayTitle).join(', ')}` : '';
+    setEntries((x) => [...x, { id: `u${Date.now()}`, role: 'user', text: text + note }]);
     setBusy(true);
     try {
-      await api.sendChat(projectId, { text, selection });
+      await api.sendChat(projectId, { text, selection, attachAssetIds: attach?.map((a) => a.assetId) });
+      if (attach?.length) loadProject().catch(() => undefined);
     } catch (e) {
       setBusy(false);
       notify('error', (e as Error).message);
     }
-  }, [projectId, selection, notify]);
+  }, [projectId, selection, notify, loadProject]);
 
   const answer = useCallback(async (questionId: string, value: unknown, display: string) => {
     setEntries((x) => [...x, { id: `u${Date.now()}`, role: 'user', text: display }]);
@@ -245,7 +262,7 @@ export default function ProjectPage() {
   const divider = `1px solid ${awsui.colorBorderDividerDefault}`;
 
   return (
-    <div className="studio-split">
+    <div className="studio-split" style={{ ['--chat-w' as string]: `${chatW}px` }}>
       {rendersOpen && <RendersModal projectId={projectId} refreshKey={renderKey} onClose={() => setRendersOpen(false)} />}
       {/* Left: canvas (preview) + docked timeline */}
       <section className="studio-canvas-pane">
@@ -262,7 +279,7 @@ export default function ProjectPage() {
               <Button variant="icon" iconName="redo" ariaLabel="redo" disabled={!redoStack.current.length || saving} onClick={redo} />
             </>}
             {saving && <StatusIndicator type="loading">{t('saving')}</StatusIndicator>}
-            <ButtonDropdown variant="primary" items={[
+            <ButtonDropdown expandToViewport variant="primary" items={[
               { id: 'final', text: t('renderFinal'), description: t('renderFinalHint') },
               { id: 'preview', text: t('renderPreview'), description: t('renderPreviewHint') },
               { id: 'list', text: t('renders') },
@@ -299,6 +316,13 @@ export default function ProjectPage() {
       </section>
       {/* Right: chat sidebar */}
       <aside className="studio-chat-pane" style={{ borderLeft: divider, background: awsui.colorBackgroundContainerContent }}>
+        <div className="chat-resizer" role="separator" aria-orientation="vertical" aria-label={t('resizeChat')} tabIndex={0}
+          aria-valuenow={chatW} aria-valuemin={CHAT_MIN} aria-valuemax={chatMax()}
+          onPointerDown={startResize} onDoubleClick={() => setChatW(CHAT_DEFAULT)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') setChatW((w) => clampChat(w + 40));
+            if (e.key === 'ArrowRight') setChatW((w) => clampChat(w - 40));
+          }} />
         {mode === 'manual' ? (
           <>
             {busy && <Box padding="s"><StatusIndicator type="loading">{t('lockedByAgent')}</StatusIndicator></Box>}

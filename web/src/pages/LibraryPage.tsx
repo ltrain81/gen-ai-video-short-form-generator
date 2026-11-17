@@ -66,13 +66,13 @@ function Recipes() {
               <FormField label={t('name')}><Input value={edit.name?.[lang] ?? ''} onChange={(e) => setEdit({ ...edit, name: { ...edit.name, [lang]: e.detail.value } })} /></FormField>
             </ColumnLayout>
             <ColumnLayout columns={3}>
-              <FormField label={t('aspect')}><Select selectedOption={{ value: edit.aspect ?? '9:16', label: edit.aspect ?? '9:16' }}
+              <FormField label={t('aspect')}><Select expandToViewport selectedOption={{ value: edit.aspect ?? '9:16', label: edit.aspect ?? '9:16' }}
                 options={['9:16', '1:1', '4:5', '16:9'].map((a) => ({ value: a, label: a }))} onChange={(e) => setEdit({ ...edit, aspect: e.detail.selectedOption.value })} /></FormField>
               <FormField label={t('lengthSec')}><Input type="number" value={String(edit.lengthSec ?? 45)} onChange={(e) => setEdit({ ...edit, lengthSec: Number(e.detail.value) })} /></FormField>
-              <FormField label={t('captions')}><Select selectedOption={{ value: edit.captions ?? 'clean', label: edit.captions ?? 'clean' }}
+              <FormField label={t('captions')}><Select expandToViewport selectedOption={{ value: edit.captions ?? 'clean', label: edit.captions ?? 'clean' }}
                 options={['clean', 'bold', 'karaoke', 'pop', 'boxed', 'minimal', 'none'].map((c) => ({ value: c, label: c }))} onChange={(e) => setEdit({ ...edit, captions: e.detail.selectedOption.value })} /></FormField>
             </ColumnLayout>
-            <FormField label={t('skills')}><Select selectedOption={edit.skill ? { value: edit.skill, label: edit.skill } : null}
+            <FormField label={t('skills')}><Select expandToViewport selectedOption={edit.skill ? { value: edit.skill, label: edit.skill } : null}
               options={skills.map((s) => ({ value: s.name, label: s.name, description: s.description }))} onChange={(e) => setEdit({ ...edit, skill: e.detail.selectedOption.value })} /></FormField>
             <FormField label={t('instruction')}><Textarea rows={5} value={edit.instruction ?? ''} onChange={(e) => setEdit({ ...edit, instruction: e.detail.value })} /></FormField>
           </SpaceBetween>
@@ -157,24 +157,24 @@ function BrandKits() {
           <SpaceBetween size="m">
             <ColumnLayout columns={2}>
               <FormField label={t('name')}><Input value={edit.name ?? ''} onChange={(e) => setEdit({ ...edit, name: e.detail.value })} /></FormField>
-              <FormField label={t('group')}><Select selectedOption={edit.groupId ? { value: edit.groupId, label: me?.groups.find((g) => g.groupId === edit.groupId)?.name } : { value: '', label: t('tenantAll') }}
+              <FormField label={t('group')}><Select expandToViewport selectedOption={edit.groupId ? { value: edit.groupId, label: me?.groups.find((g) => g.groupId === edit.groupId)?.name } : { value: '', label: t('tenantAll') }}
                 options={[{ value: '', label: t('tenantAll') }, ...(me?.groups ?? []).map((g) => ({ value: g.groupId, label: g.name }))]}
                 onChange={(e) => setEdit({ ...edit, groupId: e.detail.selectedOption.value || null })} /></FormField>
             </ColumnLayout>
             <ColumnLayout columns={3}>
-              <FormField label="Logo"><Select selectedOption={sel(edit.logoAssetId)} options={opt(['image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, logoAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
-              <FormField label={t('logoCorner')}><Select selectedOption={{ value: edit.logoCorner ?? 'tr', label: edit.logoCorner ?? 'tr' }}
+              <FormField label="Logo"><Select expandToViewport selectedOption={sel(edit.logoAssetId)} options={opt(['image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, logoAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
+              <FormField label={t('logoCorner')}><Select expandToViewport selectedOption={{ value: edit.logoCorner ?? 'tr', label: edit.logoCorner ?? 'tr' }}
                 options={['tl', 'tr', 'bl', 'br'].map((c) => ({ value: c, label: c }))} onChange={(e) => setEdit({ ...edit, logoCorner: e.detail.selectedOption.value as BrandKit['logoCorner'] })} /></FormField>
               <FormField label={t('logoSize')}><Input type="number" value={String(edit.logoScale ?? 0.18)} onChange={(e) => setEdit({ ...edit, logoScale: Number(e.detail.value) })} /></FormField>
             </ColumnLayout>
             <ColumnLayout columns={2}>
-              <FormField label={t('intro')}><Select selectedOption={sel(edit.introAssetId)} options={opt(['video', 'image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, introAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
-              <FormField label={t('outro')}><Select selectedOption={sel(edit.outroAssetId)} options={opt(['video', 'image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, outroAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
+              <FormField label={t('intro')}><Select expandToViewport selectedOption={sel(edit.introAssetId)} options={opt(['video', 'image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, introAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
+              <FormField label={t('outro')}><Select expandToViewport selectedOption={sel(edit.outroAssetId)} options={opt(['video', 'image'])} filteringType="auto" onChange={(e) => setEdit({ ...edit, outroAssetId: e.detail.selectedOption.value || undefined })} /></FormField>
             </ColumnLayout>
             <ColumnLayout columns={3}>
               <FormField label={t('textColor')}><Input value={edit.textColor ?? ''} placeholder="#FFFFFF" onChange={(e) => setEdit({ ...edit, textColor: e.detail.value })} /></FormField>
               <FormField label={t('accentColor')}><Input value={edit.accentColor ?? ''} placeholder="#FFD400" onChange={(e) => setEdit({ ...edit, accentColor: e.detail.value })} /></FormField>
-              <FormField label={t('captions')}><Select selectedOption={{ value: edit.captionPreset ?? 'bold', label: edit.captionPreset ?? 'bold' }}
+              <FormField label={t('captions')}><Select expandToViewport selectedOption={{ value: edit.captionPreset ?? 'bold', label: edit.captionPreset ?? 'bold' }}
                 options={['clean', 'bold', 'karaoke', 'pop', 'boxed', 'minimal'].map((c) => ({ value: c, label: c }))} onChange={(e) => setEdit({ ...edit, captionPreset: e.detail.selectedOption.value })} /></FormField>
             </ColumnLayout>
           </SpaceBetween>

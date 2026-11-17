@@ -31,7 +31,7 @@ BUILTIN_RECIPES: dict[str, dict] = {
              "captions": "bold", "icon": "list-view",
              "instruction": "Make a ranked countdown (default Top 5) with a number card per entry."},
     "slideshow": {"name": {"ko": "슬라이드쇼", "en": "Slideshow"}, "skill": "slideshow-photos", "aspect": "9:16", "lengthSec": 30,
-                  "captions": "minimal", "icon": "gallery",
+                  "captions": "minimal", "icon": "grid-view",
                   "instruction": "Build a slideshow from the attached images/pages with gentle motion and music."},
     "lecture": {"name": {"ko": "강의 클립", "en": "Lecture clip"}, "skill": "lecture-talk", "aspect": "9:16", "lengthSec": 60,
                 "captions": "clean", "icon": "contact",

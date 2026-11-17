@@ -76,9 +76,9 @@ export default function ShareModal({ resource, onClose }: Props) {
       footer={<Box float="right"><Button onClick={onClose}>{t('confirm')}</Button></Box>}>
       <SpaceBetween size="l">
         <SpaceBetween direction="horizontal" size="s" alignItems="end">
-          <FormField label={t('shareWith')}><div style={{ minWidth: 260 }}><Select selectedOption={principal} onChange={(e) => setPrincipal(e.detail.selectedOption)} options={options} filteringType="auto" placeholder={t('shareWith')} /></div></FormField>
-          <FormField label={t('role')}><div style={{ minWidth: 260 }}><Select selectedOption={role} onChange={(e) => setRole(e.detail.selectedOption)} options={roles} /></div></FormField>
-          <FormField label={t('expires')}><DatePicker value={expires} onChange={(e) => setExpires(e.detail.value)} placeholder="YYYY/MM/DD" /></FormField>
+          <FormField label={t('shareWith')}><div style={{ minWidth: 260 }}><Select expandToViewport selectedOption={principal} onChange={(e) => setPrincipal(e.detail.selectedOption)} options={options} filteringType="auto" placeholder={t('shareWith')} /></div></FormField>
+          <FormField label={t('role')}><div style={{ minWidth: 260 }}><Select expandToViewport selectedOption={role} onChange={(e) => setRole(e.detail.selectedOption)} options={roles} /></div></FormField>
+          <FormField label={t('expires')}><DatePicker expandToViewport value={expires} onChange={(e) => setExpires(e.detail.value)} placeholder="YYYY/MM/DD" /></FormField>
           <Button variant="primary" loading={busy} disabled={!principal} onClick={add}>{t('addShare')}</Button>
         </SpaceBetween>
         <Table

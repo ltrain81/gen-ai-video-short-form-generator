@@ -66,20 +66,20 @@ export default function GeneratePanel({ projectId, timeline, time, onOps }: { pr
       </FormField>
       {(kind === 'image_edit' || kind === 'video') && (
         <FormField label={t('references')} description={t('referencesHint')}>
-          <Multiselect selectedOptions={refs} onChange={(e) => setRefs(e.detail.selectedOptions.slice(0, 3) as typeof refs)} filteringType="auto"
+          <Multiselect expandToViewport selectedOptions={refs} onChange={(e) => setRefs(e.detail.selectedOptions.slice(0, 3) as typeof refs)} filteringType="auto"
             options={images.map((a) => ({ value: a.assetId, label: a.displayTitle }))} />
         </FormField>
       )}
       {(kind === 'video' || kind === 'music') && (
         <FormField label={t('lengthSec')}>
-          <Select selectedOption={{ value: String(seconds), label: `${seconds}s` }}
+          <Select expandToViewport selectedOption={{ value: String(seconds), label: `${seconds}s` }}
             options={(kind === 'video' ? [2, 3, 5] : [15, 30, 60, 120]).map((v) => ({ value: String(v), label: `${v}s` }))}
             onChange={(e) => setSeconds(Number(e.detail.selectedOption.value))} />
         </FormField>
       )}
       {kind === 'speech' && (
         <FormField label={t('provider')}>
-          <Select selectedOption={{ value: provider, label: provider }} options={['voxcpm', 'polly', 'elevenlabs'].map((v) => ({ value: v, label: v }))}
+          <Select expandToViewport selectedOption={{ value: provider, label: provider }} options={['voxcpm', 'polly', 'elevenlabs'].map((v) => ({ value: v, label: v }))}
             onChange={(e) => setProvider(e.detail.selectedOption.value!)} />
         </FormField>
       )}

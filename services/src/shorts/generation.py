@@ -18,6 +18,7 @@ import uuid
 from functools import lru_cache
 
 import boto3
+from botocore.exceptions import ClientError
 
 from . import acl, ddb, events, ingest, models, projects, safeurl, storage
 from .auth import Forbidden, Principal
@@ -63,6 +64,30 @@ def _instances(kind: str) -> int:
         return 0
 
 
+class NotReady(ValueError):
+    pass
+
+
+def endpoint_status(kind: str) -> str:
+    try:
+        return sm().describe_endpoint(EndpointName=endpoint(kind))["EndpointStatus"]
+    except ClientError as exc:
+        if "Could not find endpoint" in str(exc):
+            return "Missing"
+        raise
+
+
+def _require_ready(kind: str) -> None:
+    status = endpoint_status(kind)
+    if status in {"InService", "Updating", "SystemUpdating"}:
+        return
+    if status in {"Creating"}:
+        raise NotReady(f"The {kind} generation server is still being set up (first deploy takes ~20-40 min). "
+                       "Try again in a few minutes.")
+    raise NotReady(f"The {kind} generation server is not available (status: {status}). Ask an admin to check the "
+                   "Shorts-Generation stack.")
+
+
 def estimate(kind: str, params: dict) -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {sorted(KINDS)}")
@@ -72,7 +97,12 @@ def estimate(kind: str, params: dict) -> dict:
         return {"kind": kind, "provider": params["provider"], "seconds": 5, "coldStart": False, "usd": 0.01}
     cold = _instances(kind) == 0
     total = warm_s + (k["cold"] if cold else 0)
+    try:
+        status = endpoint_status(kind)
+    except Exception:  # noqa: BLE001
+        status = "Unknown"
     return {"kind": kind, "model": k["model"], "instance": k["instance"], "coldStart": cold, "seconds": int(total),
+            "serverStatus": status,
             "usd": round(total / 3600 * k["usd_h"], 2), "note": "approximate; GPU scales to zero when idle"}
 
 
@@ -132,6 +162,7 @@ def start(p: Principal, project_id: str, kind: str, params: dict) -> dict:
             req["seconds"] = float(min(5, max(1, float(params.get("seconds", 5)))))
             if refs:
                 req["image"] = refs[0]
+    _require_ready(kind)
     in_key = f"gen/{p.tenant_id}/{jid}/input.json"
     storage.s3().put_object(Bucket=get_config().media_bucket, Key=in_key, Body=json.dumps(req).encode(),
                             ContentType="application/json")

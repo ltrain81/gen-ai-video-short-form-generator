@@ -24,3 +24,11 @@ export function fileToBase64(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
+
+/** Keep the order in which the user clicked (it becomes the clip order). */
+export function mergeOrdered<T extends { assetId: string }>(prev: T[], next: T[]): T[] {
+  const ids = new Set(next.map((a) => a.assetId));
+  const kept = prev.filter((a) => ids.has(a.assetId));
+  const keptIds = new Set(kept.map((a) => a.assetId));
+  return [...kept, ...next.filter((a) => !keptIds.has(a.assetId))];
+}

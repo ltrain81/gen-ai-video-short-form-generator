@@ -11,6 +11,7 @@ import Textarea from '@cloudscape-design/components/textarea';
 import * as awsui from '@cloudscape-design/design-tokens';
 import type { ClipItem, Item, TextItem, Timeline } from '@shorts/timeline';
 import { useEffect, useState } from 'react';
+import AssetPicker from './AssetPicker';
 import { api } from '../api/client';
 import type { Asset, BrandKit } from '../api/types';
 import { useI18n } from '../i18n';
@@ -100,7 +101,7 @@ function Inspector({ timeline, selected, time, onOps, projectId }: Pick<Props, '
       {selected.type === 'text' && <TextInspector x={selected} set={set} />}
       {selected.type === 'caption' && (
         <FormField label={t('captions')}>
-          <Select selectedOption={{ value: selected.preset, label: selected.preset }} options={CAPTION_PRESETS.map((p) => ({ value: p, label: p }))}
+          <Select expandToViewport selectedOption={{ value: selected.preset, label: selected.preset }} options={CAPTION_PRESETS.map((p) => ({ value: p, label: p }))}
             onChange={(e) => set({ preset: e.detail.selectedOption.value })} />
         </FormField>
       )}
@@ -163,7 +164,7 @@ function ClipInspector({ c, set, onOps }: { c: ClipItem; set: (s: Record<string,
           <FormField label="In (s)"><CommitInput type="number" value={String(c.srcIn)} onCommit={(v) => onOps([{ op: 'trim', itemId: c.id, srcIn: num(v, c.srcIn) }], 'trim')} /></FormField>
           <FormField label="Out (s)"><CommitInput type="number" value={String(c.srcOut)} onCommit={(v) => onOps([{ op: 'trim', itemId: c.id, srcOut: num(v, c.srcOut) }], 'trim')} /></FormField>
           <FormField label={t('speed')}>
-            <Select selectedOption={{ value: String(c.speed ?? 1), label: `${c.speed ?? 1}×` }}
+            <Select expandToViewport selectedOption={{ value: String(c.speed ?? 1), label: `${c.speed ?? 1}×` }}
               options={['0.5', '0.75', '1', '1.25', '1.5', '2', '3'].map((v) => ({ value: v, label: `${v}×` }))}
               onChange={(e) => set({ speed: Number(e.detail.selectedOption.value) }, 'speed')} />
           </FormField>
@@ -183,17 +184,17 @@ function ClipInspector({ c, set, onOps }: { c: ClipItem; set: (s: Record<string,
       )}
       <ColumnLayout columns={3}>
         <FormField label={t('volume')}>
-          <Select selectedOption={{ value: String(c.volume ?? 1), label: `${Math.round((c.volume ?? 1) * 100)}%` }}
+          <Select expandToViewport selectedOption={{ value: String(c.volume ?? 1), label: `${Math.round((c.volume ?? 1) * 100)}%` }}
             options={['0', '0.25', '0.5', '0.75', '1', '1.5'].map((v) => ({ value: v, label: `${Math.round(Number(v) * 100)}%` }))}
             onChange={(e) => set({ volume: Number(e.detail.selectedOption.value) }, 'volume')} />
         </FormField>
         <FormField label={t('transitionIn')}>
-          <Select selectedOption={{ value: c.transitionIn?.type ?? 'cut', label: c.transitionIn?.type ?? 'cut' }}
+          <Select expandToViewport selectedOption={{ value: c.transitionIn?.type ?? 'cut', label: c.transitionIn?.type ?? 'cut' }}
             options={TRANSITIONS.map((v) => ({ value: v, label: v }))}
             onChange={(e) => set({ transitionIn: e.detail.selectedOption.value === 'cut' ? null : { type: e.detail.selectedOption.value, duration: 0.4 } }, 'transition')} />
         </FormField>
         <FormField label={t('fade')}>
-          <Select selectedOption={{ value: String(c.fadeOut ?? 0), label: `${c.fadeOut ?? 0}s` }}
+          <Select expandToViewport selectedOption={{ value: String(c.fadeOut ?? 0), label: `${c.fadeOut ?? 0}s` }}
             options={['0', '0.3', '0.6', '1'].map((v) => ({ value: v, label: `${v}s` }))}
             onChange={(e) => set({ fadeIn: Number(e.detail.selectedOption.value), fadeOut: Number(e.detail.selectedOption.value) }, 'fade')} />
         </FormField>
@@ -211,13 +212,13 @@ function TextInspector({ x, set }: { x: TextItem; set: (s: Record<string, unknow
       <FormField label={t('text')}><Textarea value={text} onChange={(e) => setText(e.detail.value)} onBlur={() => text !== x.text && set({ text }, 'text')} rows={3} /></FormField>
       <ColumnLayout columns={3}>
         <FormField label={t('size')}>
-          <Select selectedOption={{ value: String(x.style.size), label: `${Math.round((x.style.size ?? 0.05) * 1000) / 10}%` }}
+          <Select expandToViewport selectedOption={{ value: String(x.style.size), label: `${Math.round((x.style.size ?? 0.05) * 1000) / 10}%` }}
             options={['0.035', '0.045', '0.055', '0.07', '0.09'].map((v) => ({ value: v, label: `${Number(v) * 100}%` }))}
             onChange={(e) => set({ style: { size: Number(e.detail.selectedOption.value) } }, 'text size')} />
         </FormField>
         <FormField label={t('color')}><CommitInput value={x.style.color ?? '#FFFFFF'} onCommit={(v) => set({ style: { color: v } }, 'text color')} /></FormField>
         <FormField label={t('positionY')}>
-          <Select selectedOption={{ value: String(x.position.y), label: `${Math.round(x.position.y * 100)}%` }}
+          <Select expandToViewport selectedOption={{ value: String(x.position.y), label: `${Math.round(x.position.y * 100)}%` }}
             options={['0.12', '0.2', '0.35', '0.5', '0.65', '0.8'].map((v) => ({ value: v, label: `${Math.round(Number(v) * 100)}%` }))}
             onChange={(e) => set({ position: { ...x.position, y: Number(e.detail.selectedOption.value) } }, 'text position')} />
         </FormField>
@@ -232,6 +233,7 @@ function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 't
   const [kits, setKits] = useState<BrandKit[]>([]);
   const [kit, setKit] = useState<string | null>(timeline.settings.brandKitId ?? null);
   const [text, setText] = useState('');
+  const [picker, setPicker] = useState(false);
   useEffect(() => {
     api.assets().then((a) => setAssets(a.filter((x) => x.status === 'ready'))).catch(() => undefined);
     api.brandKits().then(setKits).catch(() => undefined);
@@ -248,13 +250,26 @@ function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 't
       {kits.length > 0 && (
         <FormField label={t('brandKit')}>
           <SpaceBetween direction="horizontal" size="xs">
-            <Select selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : null} placeholder={t('brandKit')}
+            <Select expandToViewport selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : null} placeholder={t('brandKit')}
               options={kits.map((k) => ({ value: k.brandKitId, label: k.name }))} onChange={(e) => setKit(e.detail.selectedOption.value ?? null)} />
             <Button disabled={!kit} onClick={() => onOps([{ op: 'brand', brandKitId: kit }], 'brand kit')}>{t('apply')}</Button>
           </SpaceBetween>
         </FormField>
       )}
-      <Box variant="awsui-key-label">{t('fromArchive')}</Box>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Box variant="awsui-key-label">{t('fromArchive')}</Box>
+        <Button iconName="folder-open" onClick={() => setPicker(true)}>{t('addMultiple')}</Button>
+      </div>
+      <AssetPicker visible={picker} onDismiss={() => setPicker(false)} kinds={['video', 'image', 'audio']}
+        title={t('addMultiple')} confirmText={t('addToTimeline')}
+        onConfirm={(picked) => {
+          setPicker(false);
+          let index = main?.items.length ?? 0;
+          const ops = picked.map((a) => (a.kind === 'audio'
+            ? { op: 'add_clip', assetId: a.assetId, track: 'a1', start: time, srcIn: 0, srcOut: a.durationSec ?? 30 }
+            : { op: 'add_clip', assetId: a.assetId, srcIn: 0, srcOut: Math.min(a.durationSec ?? 5, 5), duration: 3, index: index++ }));
+          onOps(ops as never, `add ${picked.length} clips`);
+        }} />
       {assets.map((a) => (
         <div key={a.assetId} style={{ display: 'flex', gap: 10, alignItems: 'center', borderBottom: `1px solid ${awsui.colorBorderDividerDefault}`, paddingBottom: 8 }}>
           {a.thumbnailUrl ? <img src={a.thumbnailUrl} alt="" style={{ width: 72, aspectRatio: '16/9', objectFit: 'cover', borderRadius: 3 }} /> : <div className="thumb-placeholder" style={{ width: 72 }} />}
