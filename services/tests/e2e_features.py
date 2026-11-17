@@ -9,6 +9,8 @@ import sys
 import time
 import urllib.request
 
+from shorts import safeurl
+
 import e2e_ingest as e
 
 
@@ -20,7 +22,7 @@ def upload(tok, path, ctype):
     parts = []
     with open(path, "rb") as f:
         for n in range(1, math.ceil(size / part) + 1):
-            r = urllib.request.urlopen(urllib.request.Request(urls[str(n)], data=f.read(part), method="PUT"))
+            r = safeurl.urlopen(urllib.request.Request(urls[str(n)], data=f.read(part), method="PUT"))
             parts.append({"partNumber": n, "etag": r.headers["ETag"]})
     e.call("POST", f"/assets/{aid}/upload/complete", {"parts": parts}, tok)
     return aid
@@ -39,7 +41,7 @@ def wait_ready(tok, aid, limit=900):
 def main(video, count):
     tok = e.token()
     logo = "/tmp/shorts-logo.png"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+    subprocess.run(["ffmpeg",  # nosec B603 - fixed args, test fixture "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                     "color=c=black@0.0:s=600x200,format=rgba,drawbox=x=0:y=0:w=600:h=200:color=0xFF9900@0.9:t=fill,"
                     "drawbox=x=20:y=20:w=560:h=160:color=0x232F3E@1:t=fill", "-frames:v", "1", logo], check=True)
     lid = upload(tok, logo, "image/png")

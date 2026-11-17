@@ -18,8 +18,8 @@ export const GEN_MODELS = [
   { kind: 'image', dir: 'image', modelId: 'Tongyi-MAI/Z-Image-Turbo', instance: 'ml.g6e.xlarge' },
   { kind: 'image-edit', dir: 'image_edit', modelId: 'Qwen/Qwen-Image-Edit-2509', instance: 'ml.g6e.4xlarge' },
   { kind: 'video', dir: 'video', modelId: 'Wan-AI/Wan2.2-TI2V-5B-Diffusers', instance: 'ml.g6e.2xlarge' },
-  { kind: 'tts', dir: 'tts', modelId: 'openbmb/VoxCPM2', instance: 'ml.g6e.xlarge' },
-  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g6e.xlarge' },
+  { kind: 'tts', dir: 'tts', modelId: 'openbmb/VoxCPM2', instance: 'ml.g6.xlarge' },
+  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g6.2xlarge' },
 ];
 const DLC = (region: string) =>
   `763104351884.dkr.ecr.${region}.amazonaws.com/huggingface-pytorch-inference:2.6.0-transformers5.5.3-gpu-py312-cu124-ubuntu22.04-v2.1`;
@@ -91,7 +91,7 @@ export class GenerationStack extends Stack {
       const code = new s3assets.Asset(this, `Code-${m.kind}`, {
         path: genDir,
         bundling: {
-          image: DockerImage.fromRegistry('public.ecr.aws/docker/library/alpine:3.20'),
+          image: DockerImage.fromRegistry('public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc'),
           outputType: cdk.BundlingOutput.SINGLE_FILE,
           command: ['sh', '-c', `mkdir -p /tmp/code && cp -r /asset-input/${m.dir}/code/. /tmp/code/ && cp /asset-input/common/shared.py /tmp/code/ && tar czf /asset-output/model.tar.gz -C /tmp code`],
         },

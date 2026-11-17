@@ -1,5 +1,5 @@
 import json
-from xml.dom import minidom
+from defusedxml import minidom
 
 from shorts import export, projects, render, timeline_ops as T
 

@@ -10,6 +10,8 @@ import logging
 import os
 import urllib.request
 
+from . import safeurl
+
 import boto3
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
@@ -43,8 +45,8 @@ def publish(chan: str, events: list[dict]) -> None:
                          headers={"Content-Type": "application/json", "Host": domain})
         SigV4Auth(creds, "appsync", region).add_auth(req)
         try:
-            with urllib.request.urlopen(urllib.request.Request(req.url, data=body, headers=dict(req.headers),
-                                                               method="POST"), timeout=10) as r:
+            with safeurl.urlopen(urllib.request.Request(req.url, data=body, headers=dict(req.headers),
+                                                        method="POST"), timeout=10) as r:
                 r.read()
         except Exception:  # noqa: BLE001 - realtime is best-effort; state is always refetchable
             log.exception("AppSync publish failed")

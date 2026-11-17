@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 import boto3
@@ -14,6 +15,9 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 TOOLS_URL = os.environ["SHORTS_TOOLS_URL"].rstrip("/")
+_u = urlparse(TOOLS_URL)
+if _u.scheme != "https" or not (_u.hostname or "").endswith(".amazonaws.com"):
+    raise SystemExit("SHORTS_TOOLS_URL must be an https execute-api URL")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 STATE_FILES = [Path(os.environ.get("BMA_STATE_DIR", "")) / "state.json",
                Path.home() / ".bma" / "state.json", Path("/home/app/.bma/state.json"), Path("/mnt/home/.bma/state.json")]
@@ -34,7 +38,7 @@ def call(method: str, path: str, body: dict | None = None) -> dict:
     req = AWSRequest(method=method, url=TOOLS_URL + path, data=data, headers={"Content-Type": "application/json"})
     SigV4Auth(_session.get_credentials().get_frozen_credentials(), "execute-api", REGION).add_auth(req)
     r = urllib.request.Request(req.url, data=data, headers=dict(req.headers), method=method)
-    with urllib.request.urlopen(r, timeout=300) as resp:
+    with urllib.request.urlopen(r, timeout=300) as resp:  # nosec B310 - fixed https URL validated at start
         return json.loads(resp.read())
 
 

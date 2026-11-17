@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "projectId": "eda6bdc2-5d95-4630-abc3-a23a863d107e",
+  "projectName": "AWS Shorts V2 (aws-samples gen-ai-video-short-form-generator v2)",
+  "createdAt": "2026-11-17T06:30:54.369Z",
+  "updatedAt": "2026-11-17T06:30:54.931Z",
+  "stage": "prod",
+  "region": "us-east-1",
+  "lastScan": {
+    "scanId": "9e936aa0-585d-4214-8159-902bdaf58f29",
+    "scanName": "AWS Shorts V2 (aws-samples gen-ai-video-short-form-generator v2) 2026-11-17 15:30",
+    "startedAt": "2026-11-17T06:30:54Z"
+  }
+}

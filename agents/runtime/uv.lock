@@ -1743,15 +1743,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-opentelemetry-distro" },
-    { name = "bedrock-agentcore" },
+    { name = "aws-opentelemetry-distro", specifier = "==0.22.0" },
+    { name = "bedrock-agentcore", specifier = "==1.26.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "aws-bedrock-token-generator", specifier = ">=1.1.0" },
-    { name = "boto3", specifier = ">=1.43.0" },
-    { name = "openai", specifier = ">=3.16.2" },
+    { name = "aws-bedrock-token-generator", specifier = "==1.1.0" },
+    { name = "boto3", specifier = "==1.44.4" },
+    { name = "openai", specifier = "==3.52.0" },
 ]
 
 [[package]]

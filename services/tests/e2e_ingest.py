@@ -11,6 +11,8 @@ import sys
 import time
 import urllib.request
 
+from shorts import safeurl
+
 import boto3
 
 OUT = json.load(open(os.environ.get("CDK_OUTPUTS", "/tmp/cdk-outputs.json")))
@@ -35,7 +37,7 @@ def call(method, path, body=None, tok=None):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body else None,
                                  headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {tok}"} if tok else {})})
     try:
-        with urllib.request.urlopen(req) as r:
+        with safeurl.urlopen(req) as r:
             data = r.read()
             return r.status, json.loads(data) if data else None
     except urllib.error.HTTPError as e:
@@ -56,7 +58,7 @@ def main(path: str):
     parts = []
     with open(path, "rb") as f:
         for i in range(1, n + 1):
-            r = urllib.request.urlopen(urllib.request.Request(urls[str(i)], data=f.read(part), method="PUT"))
+            r = safeurl.urlopen(urllib.request.Request(urls[str(i)], data=f.read(part), method="PUT"))
             parts.append({"partNumber": i, "etag": r.headers["ETag"]})
             print(f"  part {i}/{n}")
     print("complete →", call("POST", f"/assets/{aid}/upload/complete", {"parts": parts}, tok)[0])

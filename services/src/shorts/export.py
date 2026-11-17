@@ -5,7 +5,15 @@ downloaded originals.
 from __future__ import annotations
 
 import json
-from xml.sax.saxutils import escape, quoteattr
+
+
+def escape(text: str) -> str:
+    """XML text escaping (we only generate XML; nothing is parsed)."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def quoteattr(text: str) -> str:
+    return '"' + escape(text).replace('"', "&quot;").replace("\n", "&#10;") + '"'
 
 
 def _media_names(assets: dict) -> dict:

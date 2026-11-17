@@ -19,7 +19,7 @@ from functools import lru_cache
 
 import boto3
 
-from . import acl, ddb, events, ingest, models, projects, storage
+from . import acl, ddb, events, ingest, models, projects, safeurl, storage
 from .auth import Forbidden, Principal
 from .config import get_config
 
@@ -30,8 +30,8 @@ KINDS = {
     "image": {"model": "Tongyi-MAI/Z-Image-Turbo", "ext": "png", "warm": 25, "cold": 480, "instance": "ml.g6e.xlarge", "usd_h": 2.25},
     "image_edit": {"model": "Qwen/Qwen-Image-Edit-2509", "ext": "png", "warm": 150, "cold": 900, "instance": "ml.g6e.4xlarge", "usd_h": 3.80},
     "video": {"model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "ext": "mp4", "warm": 420, "cold": 720, "instance": "ml.g6e.2xlarge", "usd_h": 2.75},
-    "speech": {"model": "openbmb/VoxCPM2", "ext": "wav", "warm": 20, "cold": 420, "instance": "ml.g6e.xlarge", "usd_h": 2.25},
-    "music": {"model": "ACE-Step", "ext": "wav", "warm": 60, "cold": 600, "instance": "ml.g6e.xlarge", "usd_h": 2.25},
+    "speech": {"model": "openbmb/VoxCPM2", "ext": "wav", "warm": 25, "cold": 420, "instance": "ml.g6.xlarge", "usd_h": 1.01},
+    "music": {"model": "ACE-Step", "ext": "wav", "warm": 90, "cold": 600, "instance": "ml.g6.2xlarge", "usd_h": 1.22},
 }
 ENDPOINT_SUFFIX = {"image": "image", "image_edit": "image-edit", "video": "video", "speech": "tts", "music": "music"}
 POLL_DELAY = 30
@@ -239,7 +239,7 @@ def _tts_managed(p: Principal, text: str, params: dict) -> bytes:
     req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{voice}", method="POST",
                                  data=json.dumps({"text": text[:5000], "model_id": "eleven_multilingual_v2"}).encode(),
                                  headers={"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with safeurl.urlopen(req, timeout=120, allowed_suffixes=("api.elevenlabs.io",)) as r:
         return r.read()
 
 

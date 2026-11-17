@@ -27,7 +27,8 @@ export interface AgentStackProps extends StackProps {
   mode: string;
 }
 
-const AGENT_PACKAGES = ['openai>=3.16', 'aws-bedrock-token-generator>=1.1', 'imageio-ffmpeg>=0.6', 'strands-agents==1.65.0'];
+// Pinned for reproducible, reviewed builds.
+const AGENT_PACKAGES = ['openai==3.52.0', 'aws-bedrock-token-generator==1.1.0', 'imageio-ffmpeg==0.8.1', 'strands-agents==1.65.0'];
 
 /**
  * Orchestrator: Bedrock Managed Agents (OpenAI Codex harness) with our tools running inside an AgentCore Runtime

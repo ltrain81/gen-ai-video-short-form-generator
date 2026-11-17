@@ -19,7 +19,7 @@ export function servicesCode(scope: Construct, extra: string[] = []): lambda.Cod
   cachedCode.set(stack, perStack);
   const existing = perStack.get(key);
   if (existing) return existing;
-  const pkgs = ['"boto3>=1.40"', ...extra.map((e) => `"${e}"`)].join(' ');
+  const pkgs = ['"boto3==1.44.4"', ...extra.map((e) => `"${e}"`)].join(' ');
   const code = lambda.Code.fromAsset(SERVICES_DIR, {
     exclude: ['.venv', 'tests', '**/__pycache__', '.pytest_cache', 'media-worker', 'uv.lock'],
     bundling: {

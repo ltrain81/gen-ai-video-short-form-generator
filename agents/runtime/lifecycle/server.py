@@ -18,6 +18,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from urllib.parse import urlparse
+import re
 import shlex
 import signal
 import subprocess
@@ -161,6 +163,18 @@ ATTACHMENT_TEXT_FIELDS = (
 )
 
 
+_REGION = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
+_ENV_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _allowed_attachment(a: dict[str, Any]) -> bool:
+    region, service = a.get("region", ""), a.get("service", "")
+    if service != BMA_REMOTE_SERVICE or not _REGION.match(region) or not _ENV_ID.match(str(a.get("environment_id", ""))):
+        return False
+    u = urlparse(a.get("endpoint", ""))
+    return u.scheme == "https" and u.hostname == f"{BMA_REMOTE_SERVICE}.{region}.api.aws" and not u.username
+
+
 def valid_attachment(attachment: Any) -> bool:
     """Returns whether an attachment from activate or state.json can start the exec-server."""
     if not isinstance(attachment, dict):
@@ -266,6 +280,10 @@ class Lifecycle:
             return HTTPStatus.BAD_REQUEST, {
                 "error": "workspace.directory, endpoint, region, and service must be strings"
             }
+        # Defense in depth (AWS Shorts V2): only connect the exec-server to the regional Bedrock Managed Agents
+        # endpoint, and only pass well-formed identifiers to the Codex process.
+        if not _allowed_attachment(attachment):
+            return HTTPStatus.BAD_REQUEST, {"error": "endpoint/region/service/environment_id not allowed"}
 
         with self.lock:
             current_id, current_generation = self._key()
@@ -449,7 +467,8 @@ class Lifecycle:
                     cwd=str(workspace),
                     **attachment,
                 )
-                self.process = subprocess.Popen(
+                # Fixed binary; arguments are validated identifiers/URLs (see _allowed_attachment). No shell.
+                self.process = subprocess.Popen(  # nosec B603
                     command,
                     cwd=workspace,
                     env={**os.environ, **EXEC_SERVER_ENVIRONMENT},
@@ -479,7 +498,7 @@ class Lifecycle:
         }
         with step_span("bma.collector_start") as span:
             try:
-                self.collector = subprocess.Popen(COLLECTOR_COMMAND, env=environment)
+                self.collector = subprocess.Popen(COLLECTOR_COMMAND, env=environment)  # nosec B603 - constant command
             except OSError as error:
                 failed(span, "collector_start_failed", error)
                 return False
@@ -634,7 +653,9 @@ def serve() -> None:
     signal.signal(signal.SIGINT, handle)
     threading.Thread(target=LIFECYCLE.monitor, daemon=True).start()
     log("server_ready", port=8080, stateDir=str(BMA_STATE_DIR))
-    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+    # AgentCore Runtime contract: the container must listen on 0.0.0.0:8080 inside the session microVM. No port is
+    # published; only the AgentCore service (invoked by Bedrock Managed Agents with the session role) reaches it.
+    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()  # nosec B104
 
 
 if __name__ == "__main__":

@@ -10,21 +10,21 @@
     "test": "tsc -b"
   },
   "dependencies": {
-    "@cloudscape-design/chat-components": "^1.0.192",
-    "@cloudscape-design/components": "^3.0.1417",
-    "@cloudscape-design/design-tokens": "^3",
-    "@cloudscape-design/global-styles": "^1.0.72",
+    "@cloudscape-design/chat-components": "1.0.192",
+    "@cloudscape-design/components": "3.0.1417",
+    "@cloudscape-design/design-tokens": "3.0.118",
+    "@cloudscape-design/global-styles": "1.0.72",
     "@shorts/timeline": "workspace:*",
-    "aws-amplify": "^6.22.2",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "react-router-dom": "^7"
+    "aws-amplify": "6.22.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-router-dom": "7.18.5"
   },
   "devDependencies": {
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@vitejs/plugin-react": "^6.3.0",
-    "typescript": "~5.8",
-    "vite": "^8.3.8"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "typescript": "5.8.3",
+    "vite": "8.3.8"
   }
 }

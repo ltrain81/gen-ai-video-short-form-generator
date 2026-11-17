@@ -4,16 +4,16 @@ version = "0.1.0"
 description = "AgentCore Runtime environment for the AWS Shorts V2 orchestrator (Bedrock Managed Agents)"
 requires-python = ">=3.12"
 dependencies = [
-    "aws-opentelemetry-distro",
-    "bedrock-agentcore",
+    "aws-opentelemetry-distro==0.22.0",
+    "bedrock-agentcore==1.26.0",
 ]
 
 # The dependencies of client.py. The image build runs `uv sync --no-dev`.
 [dependency-groups]
 dev = [
-    "aws-bedrock-token-generator>=1.1.0",
-    "boto3>=1.43.0",
-    "openai>=3.16.2",
+    "aws-bedrock-token-generator==1.1.0",
+    "boto3==1.44.4",
+    "openai==3.52.0",
 ]
 
 [tool.uv]

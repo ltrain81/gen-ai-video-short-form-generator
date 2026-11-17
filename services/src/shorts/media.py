@@ -37,7 +37,10 @@ WAVEFORM_PEAKS_PER_SEC = 50
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
+    """Run a media tool. Always an argument list (never a shell string); executables are fixed names."""
+    if not isinstance(cmd, list) or cmd[0] not in {"ffmpeg", "ffprobe", "pdftoppm", "soffice"}:
+        raise ValueError("Unexpected command")
+    return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)  # nosec B603
 
 
 def ffprobe(path: Path) -> dict:
@@ -135,7 +138,7 @@ def extract_audio(src: Path, dst: Path) -> None:
 def waveform(src: Path, duration: float) -> dict:
     """Peak envelope (0-1) at WAVEFORM_PEAKS_PER_SEC, mono 8 kHz decode."""
     rate = 8000
-    proc = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate),
+    proc = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate),  # nosec B603
                            "-f", "s16le", "-"], check=True, capture_output=True)
     samples = array.array("h")
     samples.frombytes(proc.stdout[: len(proc.stdout) // 2 * 2])

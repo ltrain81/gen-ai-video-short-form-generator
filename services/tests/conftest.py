@@ -5,7 +5,10 @@ import pytest
 from moto import mock_aws
 
 os.environ.update(AWS_DEFAULT_REGION="us-east-1", AWS_REGION="us-east-1", TABLE_NAME="Main", MEDIA_BUCKET="media",
-                  VECTOR_BUCKET="vec", ACCOUNT_ID="123456789012", AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="x")
+                  VECTOR_BUCKET="vec", ACCOUNT_ID="123456789012")
+# moto: placeholder credentials (no real access)
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")  # nosec B105
 
 
 @pytest.fixture

@@ -3,13 +3,13 @@ name = "shorts"
 version = "2.0.0"
 description = "AWS Shorts V2 backend services (API, ingest, tools)"
 requires-python = ">=3.12"
-dependencies = ["boto3>=1.40"]
+dependencies = ["boto3==1.44.4"]
 
 [dependency-groups]
-dev = ["pytest>=8", "moto[dynamodb,s3]>=5"]
+dev = ["pytest==9.2.0", "moto[dynamodb,s3]==5.2.5", "defusedxml==0.7.1"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

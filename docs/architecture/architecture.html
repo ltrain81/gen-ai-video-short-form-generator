@@ -152,8 +152,17 @@ for (const [id, n] of Object.entries(N)) {
 // user node ports: treat as a 100x100 box
 
 const legend = document.getElementById('legend');
-legend.innerHTML = LANES.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') +
-  '<span><i class="line"></i>request / data</span><span><i class="line dash"></i>async · optional · fallback</span>';
+const item = (swatchClass, color, label) => {
+  const span = document.createElement('span');
+  const i = document.createElement('i');
+  if (swatchClass) i.className = swatchClass;
+  if (color) i.style.background = color;
+  span.append(i, document.createTextNode(label));
+  legend.appendChild(span);
+};
+LANES.forEach((l) => item('', l.color, l.name));
+item('line', '', 'request / data');
+item('line dash', '', 'async · optional · fallback');
 </script>
 </body>
 </html>

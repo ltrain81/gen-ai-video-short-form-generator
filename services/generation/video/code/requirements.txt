@@ -1,6 +1,6 @@
-diffusers>=0.43.0
-transformers>=4.51
-accelerate>=1.2
-ftfy
-imageio[ffmpeg]
-sentencepiece
+diffusers==0.43.0
+transformers==5.5.3
+accelerate==1.16.0
+ftfy==6.3.1
+imageio[ffmpeg]==2.38.2
+sentencepiece==0.2.3

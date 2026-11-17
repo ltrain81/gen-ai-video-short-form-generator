@@ -1,0 +1,12 @@
+node_modules/
+**/node_modules/
+.venv/
+**/.venv/
+cdk.out/
+**/cdk.out/
+web/dist/
+**/__pycache__/
+.pytest_cache/
+docs/architecture/*.png
+infra/cdk.context.json
+web/public/config.json

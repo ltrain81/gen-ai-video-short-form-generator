@@ -4,6 +4,7 @@ import io
 import json
 import os
 import urllib.request
+from urllib.parse import urlparse
 
 import torch
 
@@ -19,8 +20,12 @@ def load_json(request_body, content_type):
 
 
 def fetch(url_or_b64: str) -> bytes:
-    if url_or_b64.startswith("http"):
-        with urllib.request.urlopen(url_or_b64, timeout=120) as r:
+    """Reference inputs: presigned S3 HTTPS URLs from the app, or base64. Nothing else is fetched."""
+    if url_or_b64.startswith(("http:", "https:", "file:", "ftp:")) or "://" in url_or_b64[:16]:
+        u = urlparse(url_or_b64)
+        if u.scheme != "https" or not (u.hostname or "").endswith(".amazonaws.com"):
+            raise ValueError("Only presigned S3 https URLs are accepted")
+        with urllib.request.urlopen(url_or_b64, timeout=120) as r:  # nosec B310 - scheme/host validated above
             return r.read()
     return base64.b64decode(url_or_b64)
 

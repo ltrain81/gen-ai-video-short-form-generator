@@ -40,8 +40,15 @@ def ffmpeg_bin() -> str:
 
 
 def run(cmd: list[str], timeout: int = 7200) -> None:
+    """ffmpeg with an argument list (no shell). Remote inputs must be presigned S3 HTTPS URLs."""
+    from . import safeurl
+    if not isinstance(cmd, list) or cmd[0] != ffmpeg_bin():
+        raise RenderError("Unexpected command")
+    for i, a in enumerate(cmd[:-1]):
+        if a == "-i" and "://" in cmd[i + 1]:
+            safeurl.check(cmd[i + 1])
     log.info("ffmpeg %s", " ".join(c if len(c) < 200 else c[:200] + "…" for c in cmd[1:]))
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # nosec B603 - validated list args
     if p.returncode != 0:
         raise RenderError(p.stderr[-3000:])
 
