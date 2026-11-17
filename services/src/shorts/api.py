@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, broker, ddb, ingest, projects, recipes, search, steps, storage, ui_widgets
+from . import acl, broker, ddb, ingest, projects, recipes, search, steps, storage, timeline_ops, ui_widgets
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
