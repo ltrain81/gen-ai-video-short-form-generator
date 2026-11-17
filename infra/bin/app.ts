@@ -14,7 +14,8 @@ const app = new App();
 const prefix: string = app.node.tryGetContext('prefix') ?? 'Shorts';
 const mode: string = app.node.tryGetContext('mode') ?? 'edit'; // edit | full
 if (!['edit', 'full'].includes(mode)) throw new Error(`mode must be edit|full, got ${mode}`);
-const selfSignUp = String(app.node.tryGetContext('selfSignUp') ?? 'true') === 'true';
+// Invite-only by default; opt in with -c selfSignUp=true (each sign-up then gets its own workspace).
+const selfSignUp = String(app.node.tryGetContext('selfSignUp') ?? 'false') === 'true';
 const localOrigins: string[] = app.node.tryGetContext('allowedLocalOrigins') ?? [];
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
 

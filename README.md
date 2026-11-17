@@ -89,7 +89,7 @@ npx cdk bootstrap                       # once per account/region
 npx cdk deploy --all -c mode=edit       # -c mode=full enables generation (roadmap)
 ```
 
-Context flags (`infra/cdk.json`): `mode` (`edit` | `full`), `selfSignUp` (set `false` for invite-only pools),
+Context flags (`infra/cdk.json`): `mode` (`edit` | `full`), `selfSignUp` (default `false` = invite-only; `true` lets anyone create a workspace),
 `bmaModelId`, `allowedLocalOrigins`.
 
 Create the first user (invite-only pools):
