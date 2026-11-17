@@ -11,9 +11,14 @@ logging.basicConfig(level=logging.INFO)
 
 def main() -> int:
     job = json.loads(os.environ["JOB"])
-    if job.get("job") != "prepare":
-        raise SystemExit(f"Unknown job {job.get('job')}")
-    media.prepare(job, ingest.send_ingest_event)
+    kind = job.get("job")
+    if kind == "prepare":
+        media.prepare(job, ingest.send_ingest_event)
+    elif kind == "render":
+        from shorts import renders
+        renders.run_job(job)
+    else:
+        raise SystemExit(f"Unknown job {kind}")
     return 0
 
 

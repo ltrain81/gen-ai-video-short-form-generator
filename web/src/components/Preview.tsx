@@ -21,6 +21,15 @@ interface Props {
   selectedId?: string;
 }
 
+// Same tolerant reading as the server renderer (older timelines may hold named positions / non-object styles).
+const NAMED_Y: Record<string, number> = { top: 0.18, upper: 0.3, center: 0.5, middle: 0.5, lower: 0.7, bottom: 0.8 };
+function asPos(v: unknown, defY: number): { x: number; y: number; maxWidth?: number } {
+  if (v && typeof v === 'object') return { x: 0.5, y: defY, ...(v as object) };
+  if (typeof v === 'string') return { x: 0.5, y: NAMED_Y[v.toLowerCase()] ?? defY };
+  return { x: 0.5, y: defY };
+}
+function asObj<T extends object>(v: unknown): Partial<T> { return v && typeof v === 'object' ? (v as T) : {}; }
+
 type ReframeValue = { mode?: string; layout?: string; path?: { t: number; x: number; y: number; scale?: number }[] };
 
 function activeAt(items: Item[], t: number): Item | undefined {
@@ -58,6 +67,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
   const mainRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLVideoElement>(null);
   const musicRef = useRef<HTMLAudioElement>(null);
+  const auxRef = useRef<HTMLVideoElement>(null); // second layer of the main clip: blurred fill / split bottom
   const [playing, setPlaying] = useState(false);
   const [safe, setSafe] = useState(true);
   const [stageW, setStageW] = useState(360);
@@ -111,6 +121,10 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
 
   useEffect(() => {
     syncEl(mainRef.current, mainItem?.mediaKind === 'video' ? mainItem : undefined, time, mainItem && media[mainItem.assetId]?.proxyUrl);
+    const lay = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
+    syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' ? mainItem : undefined, time,
+      mainItem && (media[mainItem.assetId]?.scrubUrl ?? media[mainItem.assetId]?.proxyUrl));
+    if (auxRef.current) auxRef.current.muted = true;
     syncEl(overlayRef.current, overlayItem?.mediaKind === 'video' ? overlayItem : undefined, time, overlayItem && media[overlayItem.assetId]?.proxyUrl);
     const mu = musicItem && (media[musicItem.assetId]?.audioUrl ?? media[musicItem.assetId]?.proxyUrl);
     syncEl(musicRef.current, musicItem, time, mu);
@@ -145,27 +159,37 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
     const y = kb ? kb.from.y + (kb.to.y - kb.from.y) * u : 0.5;
     return url ? <img src={url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${s})`, transformOrigin: `${x * 100}% ${y * 100}%` }} /> : null;
   };
-  const blurBg = (c?: ClipItem) => {
-    if (!c) return null;
-    const f = c.mediaKind === 'video' ? focusAt(c, srcTime(c, time)) : null;
-    if (!f || (f.layout !== 'fit_blur' && f.layout !== 'split')) return null;
-    const poster = media[c.assetId]?.thumbnailUrl;
-    return poster ? <img src={poster} alt="" style={{ position: 'absolute', inset: '-10%', width: '120%', height: '120%', objectFit: 'cover', filter: 'blur(28px) brightness(0.6)' }} /> : null;
+  const mainLayout = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
+  // Mirrors the server renderer's layouts: fit_blur = blurred cover fill + contained frame;
+  // split = subject crop on the top half + whole frame (slide/board) on the bottom half; letterbox = contain on black.
+  const auxStyle: CSSProperties = mainLayout === 'fit_blur'
+    ? { position: 'absolute', inset: '-6%', width: '112%', height: '112%', objectFit: 'cover', filter: 'blur(24px) brightness(0.88)' }
+    : mainLayout === 'split' ? { position: 'absolute', left: 0, right: 0, bottom: 0, width: '100%', height: '50%', objectFit: 'contain', background: '#000' }
+      : { display: 'none' };
+  const mainStyle = (c: ClipItem): CSSProperties => {
+    const base = mediaStyle(c, srcTime(c, time), 'cover');
+    if (mainLayout === 'split') {
+      const f = focusAt(c, srcTime(c, time));
+      return { ...base, objectFit: 'cover', height: '50%', bottom: 'auto', objectPosition: `${(f.x * 100).toFixed(1)}% ${(f.y * 100).toFixed(1)}%` };
+    }
+    return base;
   };
 
   return (
     <SpaceBetween size="s">
       <div style={{ display: 'flex', justifyContent: 'center' }}>
         <div ref={stageRef} style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4 }}>
-          {blurBg(mainItem)}
+          <video ref={auxRef} muted playsInline preload="auto" style={mainItem?.mediaKind === 'video' ? auxStyle : { display: 'none' }} />
           <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
-            style={mainItem?.mediaKind === 'video' ? mediaStyle(mainItem, srcTime(mainItem, time), 'cover') : { display: 'none' }} />
+            style={mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' }} />
           {mainItem?.mediaKind === 'image' && imageEl(mainItem)}
           <video ref={overlayRef} muted playsInline preload="auto"
             style={overlayItem?.mediaKind === 'video' ? mediaStyle(overlayItem, srcTime(overlayItem, time), 'cover') : { display: 'none' }} />
           {overlayItem?.mediaKind === 'image' && imageEl(overlayItem)}
           <audio ref={musicRef} preload="auto" />
-          {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x) => (
+          {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x0) => {
+            const x = { ...x0, position: asPos(x0.position, 0.2), style: { size: 0.05, weight: 800, color: '#FFFFFF', ...asObj<TextItem['style']>(x0.style) } as TextItem['style'] };
+            return (
             <div key={x.id} style={{
               position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`, transform: 'translate(-50%, -50%)',
               width: `${(x.position?.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color ?? '#fff',
@@ -176,8 +200,10 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
               paintOrder: 'stroke fill', textTransform: x.style.uppercase ? 'uppercase' : 'none',
               outline: x.id === selectedId ? '2px dashed #22d3ee' : undefined,
             }}>{x.text}</div>
-          ))}
-          {captions.filter((c) => time >= c.start && time < c.start + c.duration).map((c) => (
+          ); })}
+          {captions.filter((c) => time >= c.start && time < c.start + c.duration).map((c0) => {
+            const c = { ...c0, position: asPos(c0.position, 0.75), style: { size: 0.045, weight: 800, color: '#FFFFFF', ...asObj<CaptionItem['style']>(c0.style) } as CaptionItem['style'] };
+            return (
             <div key={c.id} style={{
               position: 'absolute', left: '7%', right: '7%', top: `${c.position.y * 100}%`, transform: 'translateY(-50%)', textAlign: 'center',
               fontSize: (Number(c.style.size) || 0.045) * height * scale, fontWeight: c.style.weight ?? 800, color: c.style.color, lineHeight: 1.2,
@@ -192,7 +218,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
                 ))}
               </span>
             </div>
-          ))}
+          ); })}
           {safe && timeline.settings.safeZone && timeline.settings.safeZone !== 'none' && (
             <div style={{ position: 'absolute', left: '6%', right: '18%', top: '12%', bottom: '20%', border: '1px dashed rgba(255,255,255,0.35)', pointerEvents: 'none' }} />
           )}

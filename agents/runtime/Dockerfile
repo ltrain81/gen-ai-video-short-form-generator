@@ -30,11 +30,13 @@ RUN uv python install --default
 WORKDIR /opt/bma
 ENV UV_COMPILE_BYTECODE=1 UV_NO_PROGRESS=1 \
     UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX} UV_INDEX=${UV_INDEX}
-COPY pyproject.toml uv.lock* ./
+COPY agents/runtime/pyproject.toml agents/runtime/uv.lock* ./
 RUN uv sync --no-dev
-COPY lifecycle/ lifecycle/
-COPY otel/ otel/
-COPY plugins/ plugins/
+COPY agents/runtime/lifecycle/ lifecycle/
+COPY agents/runtime/otel/ otel/
+COPY agents/runtime/plugins/ plugins/
+# Skills have one source of truth (shared with the Strands fallback).
+COPY services/src/shorts/skills/ plugins/shorts/skills/
 USER app
 
 EXPOSE 8080

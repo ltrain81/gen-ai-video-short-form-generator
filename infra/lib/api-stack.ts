@@ -33,7 +33,7 @@ export class ApiStack extends Stack {
       handler: 'shorts.handlers.api.handler',
       // The API never launches the media worker; keep its (frequently changing) task-def ARN out of cross-stack refs.
       environment: {
-        ...Object.fromEntries(Object.entries(props.ingest.runtimeEnv).filter(([k]) => !k.startsWith('MEDIA_WORKER_'))),
+        ...props.ingest.sharedEnv,
         USER_POOL_ID: props.userPool.userPoolId,
         DEPLOY_MODE: props.mode,
         BROKER_FUNCTION: props.agent.broker.functionArn,

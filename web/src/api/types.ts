@@ -65,3 +65,4 @@ export interface AssetMedia {
 
 export interface ProjectSummary { projectId: string; title: string; aspect: string; synopsis?: string; currentVersion: number; createdAt: number; updatedAt: number; ownerId: string; assetIds?: string[]; role?: string }
 export interface ChatMessage { role: 'user' | 'assistant'; text: string; createdAt: number; tools?: { name: string; status: string }[]; questionId?: string; error?: string }
+export interface RenderInfo { renderId: string; status: 'queued' | 'running' | 'done' | 'failed'; quality: 'final' | 'preview'; version: number; progress?: number; message?: string; createdAt: number; finishedAt?: number; durationSec?: number; width?: number; height?: number; error?: string; urls?: { video: string; srt: string; vtt: string; thumbnail: string } }

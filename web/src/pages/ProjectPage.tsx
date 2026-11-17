@@ -15,6 +15,8 @@ import { AgentEvent, subscribeProject } from '../api/realtime';
 import type { AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
+import RendersModal from '../components/RendersModal';
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown';
 import SegmentedControl from '@cloudscape-design/components/segmented-control';
 import Button from '@cloudscape-design/components/button';
 import type { EditOp } from '../components/TimelineStrip';
@@ -45,6 +47,8 @@ export default function ProjectPage() {
   const sentFirst = useRef(false);
   const [mode, setMode] = useState<'ai' | 'manual'>('ai');
   const [saving, setSaving] = useState(false);
+  const [rendersOpen, setRendersOpen] = useState(false);
+  const [renderKey, setRenderKey] = useState(0);
   const undoStack = useRef<number[]>([]);
   const redoStack = useRef<number[]>([]);
 
@@ -242,6 +246,7 @@ export default function ProjectPage() {
 
   return (
     <div className="studio-split">
+      {rendersOpen && <RendersModal projectId={projectId} refreshKey={renderKey} onClose={() => setRendersOpen(false)} />}
       {/* Left: canvas (preview) + docked timeline */}
       <section className="studio-canvas-pane">
         <div className="studio-toolbar" style={{ borderBottom: divider }}>
@@ -257,6 +262,25 @@ export default function ProjectPage() {
               <Button variant="icon" iconName="redo" ariaLabel="redo" disabled={!redoStack.current.length || saving} onClick={redo} />
             </>}
             {saving && <StatusIndicator type="loading">{t('saving')}</StatusIndicator>}
+            <ButtonDropdown variant="primary" items={[
+              { id: 'final', text: t('renderFinal'), description: t('renderFinalHint') },
+              { id: 'preview', text: t('renderPreview'), description: t('renderPreviewHint') },
+              { id: 'list', text: t('renders') },
+              { id: 'nle', text: t('exportNle'), items: [
+                { id: 'otio', text: 'OpenTimelineIO (.otio)' }, { id: 'fcpxml', text: 'FCPXML (Final Cut / DaVinci / Premiere)' }, { id: 'edl', text: 'EDL (CMX3600)' }] },
+            ]} onItemClick={async ({ detail }) => {
+              try {
+                if (detail.id === 'final' || detail.id === 'preview') {
+                  await api.requestRender(projectId, detail.id); setRenderKey((k) => k + 1); setRendersOpen(true);
+                } else if (detail.id === 'list') setRendersOpen(true);
+                else {
+                  const r = await api.exportProject(projectId, detail.id as 'otio' | 'fcpxml' | 'edl');
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(new Blob([r.content], { type: r.contentType }));
+                  a.download = r.filename; a.click(); URL.revokeObjectURL(a.href);
+                }
+              } catch (e) { notify('error', (e as Error).message); }
+            }}>{t('export')}</ButtonDropdown>
             <Badge>{timeline.settings.aspect}</Badge>
             <Badge color="grey">v{project.currentVersion}</Badge>
             {busy && <StatusIndicator type="loading">{t('agentWorking')}</StatusIndicator>}

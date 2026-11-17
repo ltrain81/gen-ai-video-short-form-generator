@@ -1,7 +1,7 @@
 import { accessToken } from '../auth';
 import { getConfig } from '../config';
 import type { Timeline } from '@shorts/timeline';
-import type { ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
+import type { RenderInfo, ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -72,6 +72,10 @@ export const api = {
   applyOps: (id: string, ops: Record<string, unknown>[], baseVersion: number, message?: string, autoPin = true) =>
     call<{ currentVersion: number; results: { ok: boolean; error?: string; itemId?: string }[]; timeline: Timeline }>(
       'POST', `/projects/${id}/ops`, { ops, baseVersion, message, autoPin }),
+  requestRender: (id: string, quality: 'final' | 'preview') => call<{ renderId: string; status: string }>('POST', `/projects/${id}/renders`, { quality }),
+  renders: (id: string) => call<RenderInfo[]>('GET', `/projects/${id}/renders`),
+  exportProject: (id: string, format: 'otio' | 'fcpxml' | 'edl') =>
+    call<{ filename: string; contentType: string; content: string }>('GET', `/projects/${id}/export?format=${format}`),
   versions: (id: string) => call<{ version: number; author: string; message: string; createdAt: number }[]>('GET', `/projects/${id}/versions`),
   restoreVersion: (id: string, version: number) => call<{ currentVersion: number }>('POST', `/projects/${id}/restore`, { version }),
   attachAssets: (id: string, assetIds: string[]) => call<{ assetIds: string[] }>('POST', `/projects/${id}/assets`, { assetIds }),

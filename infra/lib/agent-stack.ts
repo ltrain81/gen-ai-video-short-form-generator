@@ -1,3 +1,4 @@
+import * as cdk from 'aws-cdk-lib';
 import { CfnOutput, Duration, Stack, StackProps } from 'aws-cdk-lib';
 import * as apigw from 'aws-cdk-lib/aws-apigatewayv2';
 import * as authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -24,7 +25,7 @@ export interface AgentStackProps extends StackProps {
   bmaModelId: string;
 }
 
-const AGENT_PACKAGES = ['openai>=3.16', 'aws-bedrock-token-generator>=1.1', 'imageio-ffmpeg>=0.6'];
+const AGENT_PACKAGES = ['openai>=3.16', 'aws-bedrock-token-generator>=1.1', 'imageio-ffmpeg>=0.6', 'strands-agents==1.65.0'];
 
 /**
  * Orchestrator: Bedrock Managed Agents (OpenAI Codex harness) with our tools running inside an AgentCore Runtime
@@ -73,7 +74,7 @@ export function onSubscribe(ctx) {
       description: 'AgentCore Runtime execution role for the BMA environment (exec-server + tool proxy)',
     });
     const common = {
-      ...props.ingest.runtimeEnv,
+      ...props.ingest.sharedEnv,
       EVENTS_HTTP_DOMAIN: this.eventsHttpDomain,
     };
     const tools = pyFunction(this, 'Tools', {
@@ -102,9 +103,13 @@ export function onSubscribe(ctx) {
     }));
 
     // ---------------------------------------------------------------- AgentCore Runtime (BMA environment)
+    // Build context = repo root (runtime files + shared skills); everything else is ignored.
     const image = new ecr_assets.DockerImageAsset(this, 'RuntimeImage', {
-      directory: path.join(__dirname, '..', '..', 'agents', 'runtime'),
+      directory: path.join(__dirname, '..', '..'),
+      file: 'agents/runtime/Dockerfile',
       platform: ecr_assets.Platform.LINUX_ARM64,
+      ignoreMode: cdk.IgnoreMode.DOCKER,
+      exclude: ['**', '!agents/runtime/**', '!services/src/shorts/skills/**'],
     });
     image.repository.grantPull(runtimeRole);
     runtimeRole.addToPolicy(new iam.PolicyStatement({
@@ -168,6 +173,7 @@ export function onSubscribe(ctx) {
         BMA_MODEL_ID: props.bmaModelId,
         BMA_RUNTIME_ARN: runtimeArn,
         BMA_SESSION_ROLE_ARN: sessionRole.roleArn,
+        STRANDS_MODEL_ID: 'us.openai.gpt-6.1-sol',
       },
       timeout: Duration.minutes(15),
       memorySize: 1024,
@@ -175,7 +181,9 @@ export function onSubscribe(ctx) {
       description: 'Runs one orchestrator turn and relays events',
     });
     props.table.grantReadWriteData(this.broker);
-    props.mediaBucket.grantRead(this.broker);
+    // Strands fallback runs the tools in-process (as the bound user) and keeps sessions in S3.
+    props.mediaBucket.grantReadWrite(this.broker);
+    props.ingest.grantModels(this.broker);
     eventsApi.grantPublish(this.broker);
     this.broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock-mantle:CreateAgentSession', 'bedrock-mantle:GetAgentSession', 'bedrock-mantle:ListAgentSessions',

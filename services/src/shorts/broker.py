@@ -195,7 +195,8 @@ def run_turn(event: dict) -> None:
     relay.emit({"type": "turn.started"})
     error = None
     try:
-        backend = os.environ.get("ORCHESTRATOR", "bma")
+        # Per-project override (UI/advanced) falls back to the deployment default.
+        backend = (project.get("orchestrator") or os.environ.get("ORCHESTRATOR", "bma")).lower()
         user_input = compose_input(event.get("text", ""), event.get("selection"), event.get("answer"))
         if backend == "strands":
             from . import strands_backend

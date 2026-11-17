@@ -117,6 +117,7 @@ export class IngestStack extends Stack {
     });
     props.mediaBucket.grantReadWrite(taskDef.taskRole);
     ingestQueue.grantSendMessages(taskDef.taskRole);
+    props.table.grantReadWriteData(taskDef.taskRole); // render jobs: project/timeline reads + status
 
     // ---------------------------------------------------------------- Bedrock / Transcribe / S3 Vectors permissions
     this.bedrockPolicy = [
@@ -186,6 +187,14 @@ export class IngestStack extends Stack {
       batchSize: 1, reportBatchItemFailures: true, maxConcurrency: props.modelConcurrency ?? 20,
     }));
     poller.addEventSource(sqsSource(pollQueue, 10));
+  }
+
+  /**
+   * Environment for functions in *other* stacks. Excludes the media-worker task definition ARN, which changes on
+   * every image rebuild and would otherwise pin a cross-stack export (blocking Ingest updates).
+   */
+  get sharedEnv(): Record<string, string> {
+    return Object.fromEntries(Object.entries(this.runtimeEnv).filter(([k]) => !k.startsWith('MEDIA_WORKER_')));
   }
 
   /** Grant a function the model/vector permissions used by search & tools. */

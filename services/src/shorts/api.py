@@ -630,8 +630,12 @@ def get_project(req: Request):
 def update_project(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
     fields = {k: str(v)[:4000] for k, v in req.body.items() if k in {"title", "synopsis"}}
+    if "orchestrator" in req.body:
+        if req.body["orchestrator"] not in {"bma", "strands"}:
+            raise BadRequest("orchestrator must be bma or strands")
+        fields["orchestrator"] = req.body["orchestrator"]
     if not fields:
-        raise BadRequest("Editable fields: title, synopsis")
+        raise BadRequest("Editable fields: title, synopsis, orchestrator")
     ddb.update(f"PROJ#{project['projectId']}", "META", {**fields, "updatedAt": ddb.now_ms()})
     return {"ok": True}
 
@@ -675,6 +679,46 @@ def apply_ops(req: Request):
     if any(r["ok"] for r in results) and new_tl != tl:  # no-op edits (e.g. drop in place) create no version
         version = projects.save(p, project, new_tl, version, "user", str(req.body.get("message", "manual edit")))["currentVersion"]
     return {"currentVersion": version, "results": results, "timeline": new_tl}
+
+
+@router.route("POST", "/projects/{projectId}/renders")
+def request_render(req: Request):
+    from . import renders
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
+    quality = req.body.get("quality", "final")
+    if quality not in {"final", "preview"}:
+        raise BadRequest("quality must be final or preview")
+    tl = projects.load_timeline(project)
+    if not any(i for t in tl["tracks"] if t["kind"] == "video" for i in t["items"]):
+        raise BadRequest("Nothing to render: the main track is empty")
+    item = renders.request(project, quality, req.principal.sub)
+    audit(req.principal, "project.render", f"PROJ#{project['projectId']}", {"quality": quality})
+    return {"renderId": item["renderId"], "status": item["status"]}
+
+
+@router.route("GET", "/projects/{projectId}/renders")
+def list_renders(req: Request):
+    from . import renders
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    return renders.list_for(project)
+
+
+@router.route("GET", "/projects/{projectId}/export")
+def export_project(req: Request):
+    """OTIO / FCPXML / EDL for desktop NLEs. Returns the document text (the client saves it as a file)."""
+    from . import export
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    fmt = req.query.get("format", "otio")
+    if fmt not in export.FORMATS:
+        raise BadRequest(f"format must be one of {sorted(export.FORMATS)}")
+    tl = projects.load_timeline(project)
+    ids = {i["assetId"] for t in tl["tracks"] for i in t["items"] if i.get("assetId")}
+    assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{i}", "META") for i in ids)
+              if acl.effective_role(req.principal, a)}
+    fn, ctype, ext = export.FORMATS[fmt]
+    audit(req.principal, "project.export", f"PROJ#{project['projectId']}", {"format": fmt})
+    return {"filename": f"{(tl.get('meta', {}).get('title') or project.get('title') or 'project')[:60]}.{ext}",
+            "contentType": ctype, "content": fn(tl, assets, project.get("title") or "Shorts")}
 
 
 @router.route("GET", "/projects/{projectId}/versions")
