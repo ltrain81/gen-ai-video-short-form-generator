@@ -10,12 +10,14 @@ import Link from '@cloudscape-design/components/link';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import { FormEvent, useState } from 'react';
 import { useAuth } from '../auth';
+import { getConfig } from '../config';
 import { useI18n } from '../i18n';
 
 export default function LoginPage() {
-  const { signIn, signUp, confirm } = useAuth();
+  const { signIn, signUp, confirm, setNewPassword } = useAuth();
+  const selfSignUp = getConfig().selfSignUp !== 'false';
   const { t, lang, setLang } = useI18n();
-  const [mode, setMode] = useState<'signin' | 'signup' | 'confirm'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'confirm' | 'newPassword'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [workspace, setWorkspace] = useState('');
@@ -28,7 +30,8 @@ export default function LoginPage() {
     setError('');
     setBusy(true);
     try {
-      if (mode === 'signin') await signIn(email, password);
+      if (mode === 'signin') { if ((await signIn(email, password)) === 'newPassword') { setPassword(''); setMode('newPassword'); } }
+      else if (mode === 'newPassword') await setNewPassword(password);
       else if (mode === 'signup') { await signUp(email, password, workspace || email.split('@')[1], lang); setMode('confirm'); }
       else { await confirm(email, code); await signIn(email, password); }
     } catch (err) {
@@ -50,8 +53,9 @@ export default function LoginPage() {
               <SpaceBetween size="m">
                 {error && <Alert type="error">{error}</Alert>}
                 {mode === 'confirm' && <Alert type="info">{t('codeSent')}</Alert>}
+                {mode === 'newPassword' && <Alert type="info">{t('setNewPassword')}</Alert>}
                 <FormField label={t('email')}>
-                  <Input type="email" value={email} onChange={(e) => setEmail(e.detail.value)} autoFocus disabled={mode === 'confirm'} />
+                  <Input type="email" value={email} onChange={(e) => setEmail(e.detail.value)} autoFocus disabled={mode === 'confirm' || mode === 'newPassword'} />
                 </FormField>
                 {mode !== 'confirm' && (
                   <FormField label={t('password')}>
@@ -68,11 +72,12 @@ export default function LoginPage() {
                     <Input value={code} onChange={(e) => setCode(e.detail.value)} inputMode="numeric" />
                   </FormField>
                 )}
-                <Box textAlign="center">
+                {selfSignUp && (mode === 'signin' || mode === 'signup') && <Box textAlign="center">
                   <Link onFollow={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>
                     {mode === 'signin' ? t('noAccount') : t('haveAccount')}
                   </Link>
-                </Box>
+                </Box>}
+                {!selfSignUp && mode === 'signin' && <Box textAlign="center" color="text-body-secondary" variant="small">{t('inviteOnly')}</Box>}
               </SpaceBetween>
             </Form>
           </Container>

@@ -1,0 +1,6 @@
+{
+  "name": "shorts",
+  "version": "2.0.0",
+  "description": "AWS Shorts V2 video-editing skills and the archive/timeline MCP tools.",
+  "skills": "./skills/"
+}

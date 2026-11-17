@@ -212,8 +212,12 @@ def ensure_language(ck: str, lang: str) -> None:
     created = _create_item(f"CONTENT#{ck}", f"LANG#{lang}", {
         "contentKey": ck, "language": lang, "status": "analyzing" if stages else "ready", "stages": stages})
     if created:
-        for t in tasks:
-            send_model_task(t)
+        try:
+            for t in tasks:
+                send_model_task(t)
+        except Exception:
+            ddb.delete(f"CONTENT#{ck}", f"LANG#{lang}")  # let a retry re-dispatch cleanly
+            raise
 
 
 def _copy_manifest_to_assets(ck: str, manifest: dict) -> None:

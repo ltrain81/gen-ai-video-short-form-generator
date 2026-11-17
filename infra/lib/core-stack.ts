@@ -11,6 +11,8 @@ export interface CoreStackProps extends StackProps {
   prefix: string;
   /** Origins allowed to PUT presigned upload parts (web app + local dev). */
   uploadOrigins: string[];
+  /** Self sign-up (each sign-up gets its own workspace). Some accounts enforce invite-only pools. */
+  selfSignUp: boolean;
 }
 
 /** Durable data + identity: media bucket, single table, vector bucket, Cognito. */
@@ -83,7 +85,7 @@ export class CoreStack extends Stack {
     this.vectorBucketArn = vectorBucket.attrVectorBucketArn;
 
     this.userPool = new cognito.UserPool(this, 'Users', {
-      selfSignUpEnabled: true,
+      selfSignUpEnabled: props.selfSignUp,
       signInAliases: { email: true },
       autoVerify: { email: true },
       standardAttributes: { email: { required: true, mutable: true }, fullname: { required: false, mutable: true } },

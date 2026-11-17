@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, ddb, ingest, projects, search, storage
+from . import acl, broker, ddb, ingest, projects, search, storage
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
@@ -612,7 +612,7 @@ def create_project(req: Request):
     if aspect not in projects.ASPECTS:
         raise BadRequest(f"aspect must be one of {sorted(projects.ASPECTS)}")
     item = projects.create(req.principal, str(req.body.get("title") or "Untitled")[:200], aspect,
-                           str(req.body.get("synopsis", ""))[:4000])
+                           str(req.body.get("synopsis", ""))[:4000], [str(a) for a in req.body.get("assetIds", [])])
     audit(req.principal, "project.create", f"PROJ#{item['projectId']}")
     return {"projectId": item["projectId"], "currentVersion": 0}
 
@@ -622,7 +622,7 @@ def get_project(req: Request):
     project, role = projects.require_project(req.principal, req.params["projectId"], "view")
     version = int(req.query["version"]) if req.query.get("version") else None
     return {"project": {k: project.get(k) for k in ("projectId", "title", "aspect", "synopsis", "currentVersion",
-                                                      "createdAt", "updatedAt", "ownerId", "agentSessionId")},
+                                                      "createdAt", "updatedAt", "ownerId", "assetIds")},
             "role": role, "lock": projects.lock_state(project), "timeline": projects.load_timeline(project, version)}
 
 
@@ -634,6 +634,12 @@ def update_project(req: Request):
         raise BadRequest("Editable fields: title, synopsis")
     ddb.update(f"PROJ#{project['projectId']}", "META", {**fields, "updatedAt": ddb.now_ms()})
     return {"ok": True}
+
+
+@router.route("POST", "/projects/{projectId}/assets")
+def attach_project_assets(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
+    return {"assetIds": projects.attach_assets(req.principal, project, [str(a) for a in req.body.get("assetIds", [])])}
 
 
 @router.route("PUT", "/projects/{projectId}/timeline")
@@ -671,6 +677,42 @@ def delete_project(req: Request):
 def put_project_grant(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "share")
     return _set_grant(req, f"PROJ#{project['projectId']}")
+
+
+# ================================================================== chat
+@router.route("GET", "/projects/{projectId}/chat")
+def chat_history(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    busy = project.get("agentBusy")
+    return {"messages": broker.messages(project["projectId"]),
+            "busy": bool(busy and busy.get("until", 0) > ddb.now_ms())}
+
+
+@router.route("POST", "/projects/{projectId}/chat")
+def chat_send(req: Request):
+    """Start one agent turn. Events stream to /projects/{projectId}/{sub} on AppSync Events."""
+    p = req.principal
+    project, _ = projects.require_project(p, req.params["projectId"], "edit")
+    text = str(req.body.get("text", "")).strip()[:8000]
+    answer = req.body.get("answer")  # {questionId, value}
+    if not text and not answer:
+        raise BadRequest("text or answer required")
+    if req.body.get("attachAssetIds"):
+        projects.attach_assets(p, project, [str(a) for a in req.body["attachAssetIds"]])
+    turn = uuid.uuid4().hex[:10]
+    if not broker.try_start(project["projectId"], turn):
+        raise Conflict("The agent is still working on the previous message")
+    broker.save_message(project["projectId"], "user", text, selection=req.body.get("selection"),
+                        questionId=(answer or {}).get("questionId"), turn=turn)
+    try:
+        boto3.client("lambda").invoke(FunctionName=os.environ["BROKER_FUNCTION"], InvocationType="Event",
+                                      Payload=json.dumps({"projectId": project["projectId"], "sub": p.sub, "text": text,
+                                                          "selection": req.body.get("selection"), "answer": answer,
+                                                          "turn": turn}).encode())
+    except Exception:
+        broker.finish(project["projectId"])
+        raise
+    return {"turn": turn, "channel": f"/projects/{project['projectId']}/{p.sub}"}
 
 
 # ================================================================== audit

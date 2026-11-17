@@ -62,19 +62,34 @@ def require_project(p: Principal, project_id: str, action: str) -> tuple[dict, s
     return project, role
 
 
-def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "") -> dict:
+def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "", asset_ids: list[str] | None = None) -> dict:
     pid = "p" + uuid.uuid4().hex[:20]
     now = ddb.now_ms()
     timeline = empty_timeline("tl" + uuid.uuid4().hex[:12], pid, aspect)
     _write_snapshot(p.tenant_id, pid, 0, timeline)
     item = {"PK": f"PROJ#{pid}", "SK": "META", "projectId": pid, "tenantId": p.tenant_id, "ownerId": p.sub,
             "title": title, "synopsis": synopsis, "aspect": aspect, "currentVersion": 0, "createdAt": now,
+            "assetIds": _usable(p, asset_ids or []),
             "updatedAt": now, "GSI2PK": f"TENANT#{p.tenant_id}", "GSI2SK": f"PROJ#{now}#{pid}"}
     ddb.put(item)
     ddb.put({"PK": f"PROJ#{pid}", "SK": f"VER#{0:06d}", "version": 0, "author": "system", "message": "created",
              "createdAt": now})
     acl.grant(f"PROJ#{pid}", f"USER#{p.sub}", "owner", p.tenant_id, p.sub)
     return item
+
+
+def _usable(p: Principal, asset_ids: list[str]) -> list[str]:
+    accessible = acl.accessible_asset_ids(p)
+    denied = [a for a in asset_ids if a not in accessible]
+    if denied:
+        raise Forbidden(f"No access to assets: {', '.join(denied[:5])}")
+    return list(dict.fromkeys(asset_ids))[:200]
+
+
+def attach_assets(p: Principal, project: dict, asset_ids: list[str]) -> list[str]:
+    merged = list(dict.fromkeys([*project.get("assetIds", []), *_usable(p, asset_ids)]))[:200]
+    ddb.update(f"PROJ#{project['projectId']}", "META", {"assetIds": merged, "updatedAt": ddb.now_ms()})
+    return merged
 
 
 def _write_snapshot(tenant: str, pid: str, version: int, timeline: dict) -> None:
@@ -164,7 +179,7 @@ def list_for(p: Principal) -> list[dict]:
         role = project_role(p, proj)
         if role:
             out.append({k: proj.get(k) for k in ("projectId", "title", "aspect", "currentVersion", "createdAt",
-                                                   "updatedAt", "ownerId", "synopsis")} | {"role": role})
+                                                   "updatedAt", "ownerId", "synopsis", "assetIds")} | {"role": role})
     return out
 
 

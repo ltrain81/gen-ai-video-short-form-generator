@@ -1,0 +1,18 @@
+---
+name: lecture-talk
+description: Edit speech-led material: lectures, talks, keynotes, webinars, classes with slides or a board.
+---
+Signals: content profile primarySignal=speech, high wordsPerMinute, onScreenTextShare > 0.3, shot types slide /
+screen_recording / medium on one speaker.
+
+How to cut
+- Build from the transcript (`read_transcript`). Select complete thoughts: one claim + its explanation or example.
+  Never cut mid-sentence: `snap` every in/out to "sentence".
+- Hook = the most quotable or surprising sentence; state the topic within the first 3 s.
+- Keep what is on the slide/board when the speaker refers to it ("as you see here", formulas, diagrams):
+  `look` at the range; if the slide carries meaning, use layout "split" (speaker top, slide bottom) via
+  `analyze_framing` with intent "keep the speaker and the slide/board readable". If there is no visible speaker,
+  use "fit_blur" or "letterbox" so text is not cropped.
+- Remove filler: long pauses (> 1.2 s), repeated starts, "um/uh" runs — split around them.
+- Captions on (preset "clean" or "bold"); put key terms in a title text item when the slide is not shown.
+- Long-form recap: one chapter per topic using get_asset_overview chapters; 1–3 min each.

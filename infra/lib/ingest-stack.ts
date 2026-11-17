@@ -31,6 +31,8 @@ export class IngestStack extends Stack {
   readonly cluster: ecs.Cluster;
   readonly runtimeEnv: Record<string, string>;
   readonly bedrockPolicy: iam.PolicyStatement[];
+  readonly ingestQueue: sqs.Queue;
+  readonly modelQueue: sqs.Queue;
 
   constructor(scope: Construct, id: string, props: IngestStackProps) {
     super(scope, id, props);
@@ -57,6 +59,8 @@ export class IngestStack extends Stack {
     });
     const ingestQueue = queue('IngestQueue', Duration.minutes(6), 5);
     const modelQueue = queue('ModelQueue', Duration.minutes(16), MODEL_MAX_RECEIVE);
+    this.ingestQueue = ingestQueue;
+    this.modelQueue = modelQueue;
     const pollQueue = queue('PollQueue', Duration.minutes(3), 5);
 
     // Original uploads only: tenants/{t}/assets/{a}/original/{file}

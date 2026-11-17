@@ -1,11 +1,16 @@
 import { Amplify } from 'aws-amplify';
-import { confirmSignUp, fetchAuthSession, getCurrentUser, signIn, signOut, signUp } from 'aws-amplify/auth';
+import { confirmSignIn, confirmSignUp, fetchAuthSession, getCurrentUser, signIn, signOut, signUp } from 'aws-amplify/auth';
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { getConfig } from './config';
 
 export function configureAuth() {
   const c = getConfig();
-  Amplify.configure({ Auth: { Cognito: { userPoolId: c.userPoolId, userPoolClientId: c.userPoolClientId } } });
+  Amplify.configure({
+    Auth: { Cognito: { userPoolId: c.userPoolId, userPoolClientId: c.userPoolClientId } },
+    ...(c.eventsHttpDomain ? {
+      API: { Events: { endpoint: `https://${c.eventsHttpDomain}/event`, region: c.region, defaultAuthMode: 'userPool' as const } },
+    } : {}),
+  });
 }
 
 export async function accessToken(): Promise<string> {
@@ -18,7 +23,9 @@ export async function accessToken(): Promise<string> {
 interface AuthState {
   user: { username: string; userId: string } | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** Returns 'newPassword' when an invited user must set a password first. */
+  signIn: (email: string, password: string) => Promise<'ok' | 'newPassword'>;
+  setNewPassword: (password: string) => Promise<void>;
   signUp: (email: string, password: string, workspace: string, language: string) => Promise<void>;
   confirm: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -38,6 +45,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user, loading,
     signIn: async (email, password) => {
       const r = await signIn({ username: email, password });
+      if (r.nextStep.signInStep === 'CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED') return 'newPassword';
+      if (!r.isSignedIn) throw new Error(`Additional step required: ${r.nextStep.signInStep}`);
+      await refresh();
+      return 'ok';
+    },
+    setNewPassword: async (password) => {
+      const r = await confirmSignIn({ challengeResponse: password });
       if (!r.isSignedIn) throw new Error(`Additional step required: ${r.nextStep.signInStep}`);
       await refresh();
     },

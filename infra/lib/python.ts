@@ -6,22 +6,29 @@ import * as path from 'path';
 
 export const SERVICES_DIR = path.join(__dirname, '..', '..', 'services');
 
-const cachedCode = new WeakMap<Stack, lambda.Code>();
+const cachedCode = new WeakMap<Stack, Map<string, lambda.Code>>();
 
-/** One asset per stack for every Python Lambda: the `shorts` package + pinned boto3 (S3 Vectors, Bedrock async APIs). */
-export function servicesCode(scope: Construct): lambda.Code {
+/**
+ * One asset per stack (and package set) for Python Lambdas: the `shorts` package + pinned boto3.
+ * `extra` adds pip packages (e.g. openai, imageio-ffmpeg for agent functions).
+ */
+export function servicesCode(scope: Construct, extra: string[] = []): lambda.Code {
   const stack = Stack.of(scope);
-  const existing = cachedCode.get(stack);
+  const key = extra.join(' ');
+  const perStack = cachedCode.get(stack) ?? new Map<string, lambda.Code>();
+  cachedCode.set(stack, perStack);
+  const existing = perStack.get(key);
   if (existing) return existing;
+  const pkgs = ['"boto3>=1.40"', ...extra.map((e) => `"${e}"`)].join(' ');
   const code = lambda.Code.fromAsset(SERVICES_DIR, {
     exclude: ['.venv', 'tests', '**/__pycache__', '.pytest_cache', 'media-worker', 'uv.lock'],
     bundling: {
       image: lambda.Runtime.PYTHON_3_13.bundlingImage,
       platform: 'linux/arm64',
-      command: ['bash', '-c', 'pip install --no-cache-dir "boto3>=1.40" -t /asset-output -q && cp -r src/shorts /asset-output/'],
+      command: ['bash', '-c', `pip install --no-cache-dir ${pkgs} -t /asset-output -q && cp -r src/shorts /asset-output/`],
     },
   });
-  cachedCode.set(stack, code);
+  perStack.set(key, code);
   return code;
 }
 
@@ -32,13 +39,14 @@ export interface PyFnProps {
   memorySize?: number;
   reservedConcurrentExecutions?: number;
   description?: string;
+  extraPackages?: string[];
 }
 
 export function pyFunction(scope: Construct, id: string, props: PyFnProps): lambda.Function {
   return new lambda.Function(scope, id, {
     runtime: lambda.Runtime.PYTHON_3_13,
     architecture: lambda.Architecture.ARM_64,
-    code: servicesCode(scope),
+    code: servicesCode(scope, props.extraPackages),
     handler: props.handler,
     timeout: props.timeout ?? Duration.seconds(30),
     memorySize: props.memorySize ?? 512,

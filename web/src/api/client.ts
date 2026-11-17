@@ -1,6 +1,7 @@
 import { accessToken } from '../auth';
 import { getConfig } from '../config';
-import type { Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
+import type { Timeline } from '@shorts/timeline';
+import type { ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -61,5 +62,18 @@ export const api = {
   groupMembers: (gid: string) => call<string[]>('GET', `/groups/${gid}/members`),
   addGroupMember: (gid: string, sub: string) => call<void>('POST', `/groups/${gid}/members`, { sub }),
   removeGroupMember: (gid: string, sub: string) => call<void>('DELETE', `/groups/${gid}/members/${sub}`),
+  projects: () => call<ProjectSummary[]>('GET', '/projects'),
+  createProject: (b: { title?: string; aspect?: string; synopsis?: string; assetIds?: string[] }) =>
+    call<{ projectId: string; currentVersion: number }>('POST', '/projects', b),
+  project: (id: string, version?: number) =>
+    call<{ project: ProjectSummary; role: string; lock: unknown; timeline: Timeline }>('GET', `/projects/${id}${version != null ? `?version=${version}` : ''}`),
+  saveTimeline: (id: string, timeline: Timeline, baseVersion: number, message = '') =>
+    call<{ currentVersion: number }>('PUT', `/projects/${id}/timeline`, { timeline, baseVersion, message }),
+  versions: (id: string) => call<{ version: number; author: string; message: string; createdAt: number }[]>('GET', `/projects/${id}/versions`),
+  restoreVersion: (id: string, version: number) => call<{ currentVersion: number }>('POST', `/projects/${id}/restore`, { version }),
+  attachAssets: (id: string, assetIds: string[]) => call<{ assetIds: string[] }>('POST', `/projects/${id}/assets`, { assetIds }),
+  chat: (id: string) => call<{ messages: ChatMessage[]; busy: boolean }>('GET', `/projects/${id}/chat`),
+  sendChat: (id: string, b: { text?: string; selection?: unknown; answer?: { questionId: string; value: unknown }; attachAssetIds?: string[] }) =>
+    call<{ turn: string; channel: string }>('POST', `/projects/${id}/chat`, b),
   audit: (date?: string) => call<Record<string, unknown>[]>('GET', `/audit${date ? `?date=${date}` : ''}`),
 };

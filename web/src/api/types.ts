@@ -62,3 +62,6 @@ export interface AssetMedia {
   pages?: { index: number; url: string; width: number; height: number }[];
   sprites?: { intervalSec: number; cols: number; rows: number; tileWidth: number; sheets: { url: string; firstFrame: number; frames: number }[] };
 }
+
+export interface ProjectSummary { projectId: string; title: string; aspect: string; synopsis?: string; currentVersion: number; createdAt: number; updatedAt: number; ownerId: string; assetIds?: string[]; role?: string }
+export interface ChatMessage { role: 'user' | 'assistant'; text: string; createdAt: number; tools?: { name: string; status: string }[]; questionId?: string; error?: string }

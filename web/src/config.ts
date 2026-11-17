@@ -4,6 +4,9 @@ export interface RuntimeConfig {
   userPoolId: string;
   userPoolClientId: string;
   mode: 'edit' | 'full';
+  selfSignUp?: string;
+  eventsRealtimeDomain?: string;
+  eventsHttpDomain?: string;
 }
 
 let config: RuntimeConfig | undefined;

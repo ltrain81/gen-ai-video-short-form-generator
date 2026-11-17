@@ -16,6 +16,7 @@ import AdminPage from './pages/AdminPage';
 import ArchivePage from './pages/ArchivePage';
 import AssetPage from './pages/AssetPage';
 import LoginPage from './pages/LoginPage';
+import ProjectPage from './pages/ProjectPage';
 import StudioPage from './pages/StudioPage';
 
 interface AppCtx {
@@ -47,7 +48,7 @@ export default function App() {
   if (loading) return <div className="login-wrap"><Spinner size="large" /></div>;
   if (!user) return <LoginPage />;
 
-  const studio = location.pathname === '/';
+  const studio = location.pathname === '/' || location.pathname.startsWith('/studio/');
   return (
     <CsI18nProvider locale={lang} messages={[lang === 'ko' ? csMessagesKo : csMessagesEn]}>
       <Ctx.Provider value={{ me, notify }}>
@@ -73,7 +74,7 @@ export default function App() {
           navigationOpen={!studio ? undefined : false}
           navigation={
             <SideNavigation
-              activeHref={'/' + (location.pathname.split('/')[1] ?? '')}
+              activeHref={location.pathname.startsWith('/studio') ? '/' : '/' + (location.pathname.split('/')[1] ?? '')}
               onFollow={(e) => { e.preventDefault(); navigate(e.detail.href); }}
               items={[
                 { type: 'link', text: t('navStudio'), href: '/' },
@@ -86,6 +87,7 @@ export default function App() {
           content={
             <Routes>
               <Route path="/" element={<StudioPage />} />
+              <Route path="/studio/:projectId" element={<ProjectPage />} />
               <Route path="/archive" element={<ArchivePage />} />
               <Route path="/archive/:assetId" element={<AssetPage />} />
               <Route path="/admin" element={<AdminPage />} />

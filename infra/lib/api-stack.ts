@@ -8,6 +8,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { AgentStack } from './agent-stack';
 import { IngestStack } from './ingest-stack';
 import { pyFunction } from './python';
 
@@ -17,6 +18,7 @@ export interface ApiStackProps extends StackProps {
   userPool: cognito.IUserPool;
   userPoolClient: cognito.IUserPoolClient;
   ingest: IngestStack;
+  agent: AgentStack;
   allowedOrigins: string[];
   mode: string;
 }
@@ -34,6 +36,8 @@ export class ApiStack extends Stack {
         ...Object.fromEntries(Object.entries(props.ingest.runtimeEnv).filter(([k]) => !k.startsWith('MEDIA_WORKER_'))),
         USER_POOL_ID: props.userPool.userPoolId,
         DEPLOY_MODE: props.mode,
+        BROKER_FUNCTION: props.agent.broker.functionArn,
+        EVENTS_HTTP_DOMAIN: props.agent.eventsHttpDomain,
       },
       timeout: Duration.seconds(29),
       memorySize: 1024,
@@ -42,6 +46,10 @@ export class ApiStack extends Stack {
     props.table.grantReadWriteData(fn);
     props.mediaBucket.grantReadWrite(fn);
     props.ingest.grantModels(fn);
+    props.agent.broker.grantInvoke(fn);
+    // Re-analysis / language layer dispatch from the API.
+    props.ingest.modelQueue.grantSendMessages(fn);
+    props.ingest.ingestQueue.grantSendMessages(fn);
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminCreateUser'],
       resources: [props.userPool.userPoolArn],

@@ -25,12 +25,7 @@ idp = boto3.client("cognito-idp", region_name=REGION)
 
 
 def token() -> str:
-    try:
-        idp.sign_up(ClientId=CLIENT, Username=EMAIL, Password=PASSWORD,
-                    UserAttributes=[{"Name": "email", "Value": EMAIL}, {"Name": "custom:tenantName", "Value": "E2E"}])
-        idp.admin_confirm_sign_up(UserPoolId=POOL, Username=EMAIL)
-    except idp.exceptions.UsernameExistsException:
-        pass
+    # Provision with scripts/create_user.py --password first (pools may be invite-only).
     r = idp.admin_initiate_auth(UserPoolId=POOL, ClientId=CLIENT, AuthFlow="ADMIN_USER_PASSWORD_AUTH",
                                 AuthParameters={"USERNAME": EMAIL, "PASSWORD": PASSWORD})
     return r["AuthenticationResult"]["AccessToken"]

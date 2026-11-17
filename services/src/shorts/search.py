@@ -19,15 +19,41 @@ def embed_query(text: str | None = None, image: bytes | None = None) -> list[flo
     raise ValueError("Provide text and/or image")
 
 
+DEFAULT_WEIGHTS = {"visual": 1.0, "transcription": 1.0, "audio": 0.6, "description": 1.0, "image": 1.0, "page": 1.0}
+
+
+def _query_balanced(tenant: str, embedding: list[float], mods: list[str], weights: dict) -> list[dict]:
+    """Query each modality separately and normalize scores within it.
+
+    Cross-modal cosine similarities live on different scales (text→transcription is typically much higher than
+    text→visual), so a single mixed top-K is dominated by one modality. Per-modality z-scores + weights let the
+    caller (agent or UI) say "visual matters more" for nature footage or "speech" for lectures.
+    """
+    out: list[dict] = []
+    for m in mods:
+        w = float(weights.get(m, DEFAULT_WEIGHTS.get(m, 1.0)))
+        if w <= 0:
+            continue
+        hits = vectors.query(tenant, embedding, top_k=40, filter={"modality": {"$eq": m}})
+        if not hits:
+            continue
+        sims = [1 - float(h.get("distance", 1)) for h in hits]
+        mean = sum(sims) / len(sims)
+        std = (sum((x - mean) ** 2 for x in sims) / len(sims)) ** 0.5 or 1e-6
+        for h, sim in zip(hits, sims):
+            # Keep absolute similarity in play so a weak modality's best hit does not beat a strong match.
+            h["_score"] = w * (0.5 * (sim - mean) / std + 4.0 * sim)
+            h["_sim"] = sim
+            out.append(h)
+    return out
+
+
 def search(p: Principal, text: str | None = None, image: bytes | None = None, modalities: list[str] | None = None,
            kinds: list[str] | None = None, asset_ids: list[str] | None = None, limit: int = 20,
-           per_asset: int = 5) -> list[dict]:
+           per_asset: int = 5, weights: dict | None = None) -> list[dict]:
     embedding = embed_query(text, image)
-    flt: dict = {}
-    mods = [m for m in (modalities or []) if m in MODALITIES]
-    if mods:
-        flt["modality"] = {"$in": mods}
-    hits = vectors.query(p.tenant_id, embedding, top_k=100, filter=flt or None)
+    mods = [m for m in (modalities or []) if m in MODALITIES] or sorted(MODALITIES)
+    hits = _query_balanced(p.tenant_id, embedding, mods, {**DEFAULT_WEIGHTS, **(weights or {})})
 
     accessible = acl.accessible_asset_ids(p)
     if asset_ids:
@@ -42,11 +68,11 @@ def search(p: Principal, text: str | None = None, image: bytes | None = None, mo
         if ck not in ck_assets:
             ck_assets[ck] = [a["assetId"] for a in ddb.query(f"CONTENT#{ck}", f"TENANT#{p.tenant_id}#", index="GSI3")
                              if a["assetId"] in accessible]
-        score = round(1 - float(h.get("distance", 1)), 4)  # cosine distance → similarity
+        score = round(h["_score"], 4)
         for aid in ck_assets[ck]:
             grouped[aid].append({"startSec": md.get("startSec", 0), "endSec": md.get("endSec", 0),
                                  "modality": md.get("modality"), "scope": md.get("scope"), "page": md.get("page"),
-                                 "score": score, "text": md.get("text")})
+                                 "score": score, "similarity": round(h["_sim"], 4), "text": md.get("text")})
     if not grouped:
         return []
     assets = {a["assetId"]: a for a in ddb.batch_get((f"ASSET#{aid}", "META") for aid in grouped)}
@@ -81,7 +107,7 @@ def _dedupe_segments(segs: list[dict]) -> list[dict]:
 PUBLIC_FIELDS = ("assetId", "kind", "status", "title", "aiTitle", "aiSummary", "filename", "contentType",
                  "durationSec", "width", "height", "fps", "pageCount", "hasAudio", "sizeBytes", "tags", "people",
                  "collectionIds", "ownerId", "createdAt", "updatedAt", "scope", "projectId", "aiGenerated",
-                 "deletedAt", "error")
+                 "deletedAt", "error", "analysisLanguage")
 
 
 def public_asset(asset: dict, role: str | None = None) -> dict:

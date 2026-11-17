@@ -16,7 +16,8 @@
     "aws-amplify": "^6.22.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7"
+    "react-router-dom": "^7",
+    "@shorts/timeline": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19",
