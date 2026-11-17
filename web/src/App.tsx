@@ -49,10 +49,15 @@ export default function App() {
     else setMe(null);
   }, [user, notify]);
 
+  const studio = location.pathname === '/' || location.pathname.startsWith('/studio/');
+  // Navigation: collapsed by default on the chat-first studio and the editor (more canvas), open elsewhere;
+  // always toggleable with the hamburger button. (Hooks must run before the early returns below.)
+  const [navOpen, setNavOpen] = useState(!studio);
+  useEffect(() => { setNavOpen(!studio); }, [studio]);
+
   if (loading) return <div className="login-wrap"><Spinner size="large" /></div>;
   if (!user) return <LoginPage />;
 
-  const studio = location.pathname === '/' || location.pathname.startsWith('/studio/');
   const editor = location.pathname.startsWith('/studio/');
   return (
     <CsI18nProvider locale={lang} messages={[lang === 'ko' ? csMessagesKo : csMessagesEn]}>
@@ -81,14 +86,15 @@ export default function App() {
         <AppLayout
           headerSelector="#top-nav"
           toolsHide
-          navigationHide={editor}
           disableContentPaddings={editor}
           maxContentWidth={editor ? Number.MAX_VALUE : undefined}
-          navigationOpen={!studio ? undefined : false}
+          navigationOpen={navOpen}
+          onNavigationChange={({ detail }) => setNavOpen(detail.open)}
+          ariaLabels={{ navigationToggle: t('openMenu'), navigationClose: t('closeMenu'), navigation: t('menu') }}
           navigation={
             <SideNavigation
               activeHref={location.pathname.startsWith('/studio') ? '/' : '/' + (location.pathname.split('/')[1] ?? '')}
-              onFollow={(e) => { e.preventDefault(); navigate(e.detail.href); }}
+              onFollow={(e) => { e.preventDefault(); navigate(e.detail.href); if (studio) setNavOpen(false); }}
               items={[
                 { type: 'link', text: t('navStudio'), href: '/' },
                 { type: 'link', text: t('navArchive'), href: '/archive' },
