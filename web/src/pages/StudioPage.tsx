@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
 import AssetPicker from '../components/AssetPicker';
 import { api } from '../api/client';
+import { uploadAndFetch } from '../api/upload';
 import type { Asset, BrandKit, ProjectSummary, Recipe } from '../api/types';
 import { useI18n } from '../i18n';
 import { fmtDate } from '../util';
@@ -44,6 +45,15 @@ export default function StudioPage() {
   const [batch, setBatch] = useState(false);
   const [count, setCount] = useState(5);
   const [busy, setBusy] = useState(false);
+  const [dropOver, setDropOver] = useState(false);
+  const [uploading, setUploading] = useState(0);
+  const onFiles = (files: File[]) => {
+    setUploading((n) => n + files.length);
+    files.forEach((f) => uploadAndFetch(f)
+      .then((a) => setPicked((x) => [...x, a]))
+      .catch((e) => notify('error', `${f.name}: ${(e as Error).message}`))
+      .finally(() => setUploading((n) => n - 1)));
+  };
 
   useEffect(() => {
     api.projects().then((p) => setRecent(p.slice(0, 6))).catch(() => undefined);
@@ -85,9 +95,12 @@ export default function StudioPage() {
     <div className="studio-center">
       <SpaceBetween size="xs" alignItems="center">
         <Box variant="h1">{t('studioWelcome')}</Box>
-        <Box color="text-body-secondary">{t('studioHint')}</Box>
+        <Box color="text-body-secondary">{t('studioHint')} {t('dropFilesHint')}</Box>
       </SpaceBetween>
-      <div className="prompt">
+      <div className={`prompt${dropOver ? ' drop-zone-active' : ''}`}
+        onDragOver={(e) => { if (!e.dataTransfer.types.includes('Files')) return; e.preventDefault(); setDropOver(true); }}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOver(false); }}
+        onDrop={(e) => { setDropOver(false); if (e.dataTransfer.files.length) { e.preventDefault(); onFiles([...e.dataTransfer.files]); } }}>
         <SpaceBetween size="m">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
             {recipes.map((r) => {
@@ -103,7 +116,7 @@ export default function StudioPage() {
           </div>
           <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={start} minRows={3} maxRows={10}
             actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || (!value.trim() && !recipe)}
-            placeholder={recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
+            placeholder={uploading ? `${t('uploading')} (${uploading})…` : recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
             secondaryActions={
               <SpaceBetween direction="horizontal" size="xs" alignItems="center">
                 <Button iconName="folder-open" onClick={() => setShowPicker(true)}>
@@ -127,7 +140,7 @@ export default function StudioPage() {
             }
             secondaryContent={picked.length ? (
               <SpaceBetween size="xs">
-                <TokenGroup items={picked.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
+                <TokenGroup items={picked.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: a.status !== 'ready' ? t('analyzing') : t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
                   onDismiss={({ detail }) => setPicked(picked.filter((_, i) => i !== detail.itemIndex))} />
                 {canBatch && (
                   <SpaceBetween direction="horizontal" size="xs" alignItems="center">

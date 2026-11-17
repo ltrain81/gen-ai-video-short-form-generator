@@ -7,19 +7,22 @@ import Spinner from '@cloudscape-design/components/spinner';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import * as awsui from '@cloudscape-design/design-tokens';
 import type { Item, Timeline } from '@shorts/timeline';
+import { timelineDuration } from '@shorts/timeline';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../App';
 import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
+import { uploadFile } from '../api/upload';
 import type { Asset, AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
 import RendersModal from '../components/RendersModal';
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown';
+import Modal from '@cloudscape-design/components/modal';
 import SegmentedControl from '@cloudscape-design/components/segmented-control';
 import Button from '@cloudscape-design/components/button';
-import type { EditOp } from '../components/TimelineStrip';
+import type { DragAsset, DropTarget, EditOp, ItemAction } from '../components/TimelineStrip';
 import Preview from '../components/Preview';
 import TimelineStrip from '../components/TimelineStrip';
 import { useI18n } from '../i18n';
@@ -29,6 +32,11 @@ function fromHistory(m: ChatMessage[]): ChatEntry[] {
   return m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, error: x.error }));
 }
 
+const SHORTCUTS: [string, string][] = [
+  ['Space', 'scPlay'], ['← →', 'scFrame'], ['⇧← ⇧→', 'scSecond'], ['J L', 'scJump'], ['Home End', 'scEnds'],
+  ['S', 'scSplit'], ['⌫', 'scDelete'], ['⌘C ⌘V', 'scCopyPaste'], ['⌘D', 'scDuplicate'], ['⌘Z ⇧⌘Z', 'scUndo'],
+  ['⌘/Ctrl+Wheel', 'scZoom'], ['Esc', 'scDeselect'], ['?', 'shortcuts'],
+];
 const CHAT_MIN = 320;
 const CHAT_DEFAULT = 440;
 const chatMax = () => Math.max(CHAT_MIN, Math.min(1100, Math.round(window.innerWidth * 0.65)));
@@ -66,6 +74,11 @@ export default function ProjectPage() {
   const [renderKey, setRenderKey] = useState(0);
   const undoStack = useRef<number[]>([]);
   const redoStack = useRef<number[]>([]);
+  const [playing, setPlaying] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [pending, setPending] = useState<Record<string, { name: string; status: string; pct: number }>>({});
+  const clipboard = useRef<{ item: Item; trackId: string } | null>(null);
+  const [hasClip, setHasClip] = useState(false);
 
   const ensureMedia = useCallback(async (ids: string[]) => {
     const missing = ids.filter((id) => !(id in media));
@@ -229,20 +242,136 @@ export default function ProjectPage() {
   const undo = useCallback(() => { const v = undoStack.current.pop(); if (v != null) restore(v, 'undo'); }, [restore]);
   const redo = useCallback(() => { const v = redoStack.current.pop(); if (v != null) restore(v, 'redo'); }, [restore]);
 
-  // Keyboard shortcuts in manual mode.
+  const applyRef = useRef(applyOps);
+  applyRef.current = applyOps;
+
+  /** Ops that recreate `item` on `trackId` — after the original (duplicate) or at timeline time `at` (paste). */
+  const cloneOps = useCallback((item: Item, trackId: string, at?: number): EditOp[] | null => {
+    if (!timeline) return null;
+    const tr = timeline.tracks.find((x) => x.id === trackId);
+    if (!tr) return null;
+    const indexAt = (tm: number) => tr.items.filter((x) => x.start + x.duration / 2 < tm).length;
+    const place = tr.kind === 'video'
+      ? { index: at == null ? tr.items.findIndex((x) => x.id === item.id) + 1 : indexAt(at) }
+      : { start: +(at ?? item.start + item.duration).toFixed(3) };
+    if (item.type === 'clip') {
+      const keep = Object.fromEntries(['transform', 'volume', 'fadeIn', 'fadeOut', 'transitionIn', 'transitionOut', 'effects', 'reframe', 'opacity', 'kenBurns', 'page']
+        .filter((k) => (item as unknown as Record<string, unknown>)[k] != null).map((k) => [k, (item as unknown as Record<string, unknown>)[k]]));
+      return [{ op: 'add_clip', assetId: item.assetId, track: trackId, srcIn: item.srcIn, srcOut: item.srcOut, speed: item.speed ?? 1, duration: item.duration, ...keep, ...place }];
+    }
+    if (item.type === 'text') {
+      return [{ op: 'add_text', track: trackId, text: item.text, role: item.role, style: item.style, position: item.position,
+        animation: item.animation, duration: item.duration, start: place.start ?? item.start + item.duration }];
+    }
+    return null;
+  }, [timeline]);
+
+  const itemAction = useCallback((action: ItemAction, item: Item, trackId: string) => {
+    if (action === 'copy') { clipboard.current = { item, trackId }; setHasClip(true); notify('info', t('copied')); return; }
+    if (action === 'paste') {
+      const c = clipboard.current;
+      const ops = c && cloneOps(c.item, c.trackId, time);
+      if (ops) applyOps(ops, 'paste'); else if (c) notify('warning', t('cannotCopy'));
+      return;
+    }
+    if (action === 'duplicate') { const ops = cloneOps(item, trackId); if (ops) applyOps(ops, 'duplicate'); else notify('warning', t('cannotCopy')); return; }
+    if (action === 'delete') { applyOps([{ op: 'remove', itemId: item.id }], 'delete'); return; }
+    if (action === 'split') { applyOps([{ op: 'split', itemId: item.id, at: time }], 'split'); return; }
+    if (action === 'pin') {
+      const on = timeline?.pins.some((p) => p.split('/')[1] === item.id);
+      applyOps([{ op: 'pin', path: `items/${item.id}`, on: !on }], on ? 'unpin' : 'pin');
+    }
+  }, [cloneOps, applyOps, time, timeline, notify, t]);
+
+  /** Place an archive asset where it was dropped. */
+  const dropAsset = useCallback((a: DragAsset, at: DropTarget) => {
+    const dur = a.durationSec ?? 0;
+    let op: EditOp;
+    if (a.kind === 'audio' || (at.trackKind === 'audio' && a.kind === 'video')) {
+      const track = at.trackKind === 'audio' ? at.trackId : 'a1';
+      op = { op: 'add_clip', assetId: a.assetId, track, start: at.trackKind === 'audio' ? at.time : time, srcIn: 0, srcOut: dur || 30 };
+    } else if (at.trackKind === 'audio') {
+      notify('warning', t('audioOnlyTrack')); return;
+    } else if (at.trackKind === 'video') {
+      op = { op: 'add_clip', assetId: a.assetId, index: at.index, srcIn: 0, srcOut: Math.min(dur || 5, 10), duration: 3 };
+    } else {
+      const track = at.trackKind === 'overlay' ? at.trackId : 'o1';
+      op = { op: 'add_clip', assetId: a.assetId, track, start: at.time, srcIn: 0, srcOut: Math.min(dur || 3, 3), duration: 3 };
+    }
+    applyRef.current([op], 'drop');
+    api.attachAssets(projectId, [a.assetId]).catch(() => undefined);
+  }, [projectId, time, notify, t]);
+
+  /** Files from the desktop: upload → wait for analysis → place where they were dropped. */
+  const dropFiles = useCallback((files: File[], at: DropTarget) => {
+    files.forEach((file, k) => {
+      const key = `${file.name}-${file.size}-${Date.now()}-${k}`;
+      const set = (v: { status: string; pct: number } | null) => setPending((x) => {
+        const n = { ...x };
+        if (v) n[key] = { name: file.name, ...v }; else delete n[key];
+        return n;
+      });
+      set({ status: 'uploading', pct: 0 });
+      (async () => {
+        try {
+          const id = await uploadFile(file, (pr) => set({ status: 'uploading', pct: Math.round((pr.loaded / Math.max(1, pr.total)) * 100) }), { scope: 'project', projectId });
+          set({ status: 'processing', pct: 100 });
+          api.attachAssets(projectId, [id]).catch(() => undefined);
+          for (let i = 0; i < 360; i++) {
+            const a = await api.asset(id);
+            if (a.status === 'ready') {
+              set(null);
+              dropAsset({ assetId: id, kind: a.kind, durationSec: a.durationSec }, { ...at, index: at.index + k });
+              return;
+            }
+            if (a.status === 'failed' || a.status === 'aborted') throw new Error(a.error ?? a.status);
+            set({ status: a.processing?.status ?? a.status, pct: 100 });
+            await new Promise((r) => setTimeout(r, 4000));
+          }
+          throw new Error('timed out');
+        } catch (e) {
+          set(null);
+          notify('error', `${file.name}: ${(e as Error).message}`);
+        }
+      })();
+    });
+  }, [projectId, dropAsset, notify]);
+  const mainTarget = useCallback((): DropTarget => {
+    const main = timeline?.tracks.find((x) => x.kind === 'video');
+    return { trackId: main?.id ?? 'v1', trackKind: 'video', time: 0, index: main?.items.length ?? 0 };
+  }, [timeline]);
+
+  // Keyboard shortcuts (playback everywhere; editing in manual mode). `?` lists them.
   useEffect(() => {
-    if (mode !== 'manual') return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+      const el = e.target as HTMLElement;
+      if (el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.isContentEditable || el?.closest?.('[role=dialog]')) return;
+      const mod = e.metaKey || e.ctrlKey;
+      const dur = timeline ? timelineDuration(timeline) : 0;
+      if (e.key === '?') { e.preventDefault(); setHelpOpen(true); return; }
+      if (e.key === ' ' || e.key.toLowerCase() === 'k') { e.preventDefault(); setPlaying((p) => !p); return; }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault(); setPlaying(false);
+        const step = (e.shiftKey ? 1 : 1 / 30) * (e.key === 'ArrowLeft' ? -1 : 1);
+        setTime((x) => Math.min(dur, Math.max(0, +(x + step).toFixed(3)))); return;
+      }
+      if (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'l') { setPlaying(false); setTime((x) => Math.min(dur, Math.max(0, x + (e.key.toLowerCase() === 'j' ? -5 : 5)))); return; }
+      if (e.key === 'Home') { e.preventDefault(); setTime(0); return; }
+      if (e.key === 'End') { e.preventDefault(); setTime(dur); return; }
+      if (e.key === 'Escape') { setSelected(undefined); return; }
+      if (mode !== 'manual' || busy) return;
+      if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+      if (mod && e.key.toLowerCase() === 'v') { e.preventDefault(); if (clipboard.current) itemAction('paste', clipboard.current.item, clipboard.current.trackId); return; }
       if (!selected) return;
-      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); applyOps([{ op: 'remove', itemId: selected.item.id }], 'delete'); }
-      if (e.key.toLowerCase() === 's') { e.preventDefault(); applyOps([{ op: 'split', itemId: selected.item.id, at: time }], 'split'); }
+      const tid = selected.trackId ?? '';
+      if (mod && e.key.toLowerCase() === 'c') { e.preventDefault(); itemAction('copy', selected.item, tid); return; }
+      if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); itemAction('duplicate', selected.item, tid); return; }
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); itemAction('delete', selected.item, tid); return; }
+      if (!mod && e.key.toLowerCase() === 's') { e.preventDefault(); itemAction('split', selected.item, tid); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, selected, time, applyOps, undo, redo]);
+  }, [mode, busy, selected, timeline, itemAction, undo, redo]);
 
   // First message typed on the Studio landing.
   useEffect(() => {
@@ -263,6 +392,17 @@ export default function ProjectPage() {
 
   return (
     <div className="studio-split" style={{ ['--chat-w' as string]: `${chatW}px` }}>
+      <Modal visible={helpOpen} onDismiss={() => setHelpOpen(false)} header={t('shortcuts')}>
+        <SpaceBetween size="xs">
+          {SHORTCUTS.map(([keys, label]) => (
+            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+              <span>{t(label as never)}</span>
+              <span>{keys.split(' ').map((k) => <span key={k} className="kbd" style={{ marginLeft: 4 }}>{k}</span>)}</span>
+            </div>
+          ))}
+          <Box variant="small" color="text-body-secondary">{t('shortcutsNote')}</Box>
+        </SpaceBetween>
+      </Modal>
       {rendersOpen && <RendersModal projectId={projectId} refreshKey={renderKey} onClose={() => setRendersOpen(false)} />}
       {/* Left: canvas (preview) + docked timeline */}
       <section className="studio-canvas-pane">
@@ -278,6 +418,7 @@ export default function ProjectPage() {
               <Button variant="icon" iconName="undo" ariaLabel="undo" disabled={!undoStack.current.length || saving} onClick={undo} />
               <Button variant="icon" iconName="redo" ariaLabel="redo" disabled={!redoStack.current.length || saving} onClick={redo} />
             </>}
+            <Button variant="icon" iconName="keyboard" ariaLabel={t('shortcuts')} onClick={() => setHelpOpen(true)} />
             {saving && <StatusIndicator type="loading">{t('saving')}</StatusIndicator>}
             <ButtonDropdown expandToViewport variant="primary" items={[
               { id: 'final', text: t('renderFinal'), description: t('renderFinalHint') },
@@ -304,13 +445,24 @@ export default function ProjectPage() {
           </SpaceBetween>
         </div>
         <div className="studio-stage">
-          <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id} />
+          <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id}
+            playing={playing} onPlayingChange={setPlaying}
+            onDropFiles={busy ? undefined : (f) => dropFiles(f, mainTarget())}
+            onDropAsset={busy ? undefined : (raw) => { try { dropAsset(JSON.parse(raw) as DragAsset, mainTarget()); } catch { /* ignore */ } }} />
         </div>
         <div className="studio-timeline" style={{ borderTop: divider, background: awsui.colorBackgroundContainerContent }}>
           <ExpandableSection defaultExpanded variant="footer" headerText={t('timeline')}>
-            <TimelineStrip timeline={timeline} time={time} onSeek={setTime} selectedId={selected?.item.id}
-              onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles}
-              editable={mode === 'manual' && !busy} onOps={applyOps} />
+            {Object.keys(pending).length > 0 && (
+              <SpaceBetween direction="horizontal" size="s">
+                {Object.entries(pending).map(([k, v]) => (
+                  <StatusIndicator key={k} type="loading">{v.name} · {v.status === 'uploading' ? `${t('uploading')} ${v.pct}%` : t('analyzingThenAdd')}</StatusIndicator>
+                ))}
+              </SpaceBetween>
+            )}
+            <TimelineStrip timeline={timeline} time={time} onSeek={(x) => { setPlaying(false); setTime(x); }} selectedId={selected?.item.id}
+              onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles} thumbs={thumbs}
+              editable={mode === 'manual' && !busy} droppable={!busy} onOps={applyOps}
+              onDropAsset={dropAsset} onDropFiles={dropFiles} onAction={itemAction} canPaste={hasClip} />
           </ExpandableSection>
         </div>
       </section>
@@ -329,7 +481,7 @@ export default function ProjectPage() {
             <EditorPanel projectId={projectId} timeline={timeline} selected={selected?.item} time={time} titles={titles}
               onOps={applyOps} onRestore={(v) => restore(v)} version={project.currentVersion} disabled={busy || saving} />
           </>
-        ) : <ChatPanel entries={entries} busy={busy} onSend={send} onAnswer={answer} thumbs={thumbs} titles={titles}
+        ) : <ChatPanel entries={entries} busy={busy} onSend={send} projectId={projectId} onError={(m) => notify('error', m)} onAnswer={answer} thumbs={thumbs} titles={titles}
           suggestions={suggestions} selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)}
           header={
             <div style={{ padding: '14px 20px', borderBottom: divider }}>

@@ -53,6 +53,12 @@ export default function App() {
   // Navigation: collapsed by default on the chat-first studio and the editor (more canvas), open elsewhere;
   // always toggleable with the hamburger button. (Hooks must run before the early returns below.)
   const [navOpen, setNavOpen] = useState(!studio);
+  useEffect(() => {
+    const block = (e: DragEvent) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); };
+    window.addEventListener('dragover', block);
+    window.addEventListener('drop', block);
+    return () => { window.removeEventListener('dragover', block); window.removeEventListener('drop', block); };
+  }, []);
   useEffect(() => { setNavOpen(!studio); }, [studio]);
 
   if (loading) return <div className="login-wrap"><Spinner size="large" /></div>;

@@ -36,3 +36,16 @@ body { margin: 0; }
 
 .recipe-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid; border-radius: 999px; font: inherit; font-size: 13px; cursor: pointer; }
 .recipe-chip:hover { border-color: #0972d3 !important; }
+
+.tl-chip { font: inherit; font-size: 11px; border: 1px solid rgba(127,127,127,0.45); background: transparent; color: inherit; border-radius: 12px; padding: 1px 9px; cursor: pointer; margin-right: 6px; }
+.tl-chip.on { border-color: #0972d3; color: #0972d3; background: rgba(9,114,211,0.08); }
+.ctx-item { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; padding: 6px 14px; background: none; border: 0; color: inherit; cursor: pointer; white-space: pre; }
+.ctx-item:hover:not(:disabled) { background: rgba(9,114,211,0.1); }
+.ctx-item:disabled { opacity: 0.4; cursor: default; }
+.drop-zone-active { outline: 2px dashed #0972d3; outline-offset: -6px; background: rgba(9,114,211,0.06); }
+.kbd { display: inline-block; min-width: 18px; text-align: center; font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 6px; border: 1px solid rgba(127,127,127,0.5); border-bottom-width: 2px; border-radius: 4px; }
+.tl-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; background: rgba(255,255,255,0.65); z-index: 1; opacity: 0; transition: opacity .12s; }
+.tl-handle.l { left: 0; border-radius: 3px 0 0 3px; }
+.tl-handle.r { right: 0; border-radius: 0 3px 3px 0; }
+.tl-item:hover .tl-handle, .tl-handle.on { opacity: 1; }
+.tl-speed { position: absolute; right: 9px; top: 1px; font-size: 9px; line-height: 12px; background: rgba(0,0,0,0.45); padding: 0 4px; border-radius: 3px; }

@@ -19,6 +19,11 @@ interface Props {
   time: number;
   onTime: (t: number) => void;
   selectedId?: string;
+  /** Optional controlled playback (keyboard shortcuts live in the page). */
+  playing?: boolean;
+  onPlayingChange?: (v: boolean) => void;
+  onDropFiles?: (files: File[]) => void;
+  onDropAsset?: (raw: string) => void;
 }
 
 // Same tolerant reading as the server renderer (older timelines may hold named positions / non-object styles).
@@ -62,13 +67,16 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain'): CSSPrope
   };
 }
 
-export default function Preview({ timeline, media, time, onTime, selectedId }: Props) {
+export default function Preview({ timeline, media, time, onTime, selectedId, playing: playingProp, onPlayingChange, onDropFiles, onDropAsset }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLVideoElement>(null);
   const musicRef = useRef<HTMLAudioElement>(null);
   const auxRef = useRef<HTMLVideoElement>(null); // second layer of the main clip: blurred fill / split bottom
-  const [playing, setPlaying] = useState(false);
+  const [playingLocal, setPlayingLocal] = useState(false);
+  const playing = playingProp ?? playingLocal;
+  const setPlaying = useCallback((v: boolean) => { if (onPlayingChange) onPlayingChange(v); else setPlayingLocal(v); }, [onPlayingChange]);
+  const [dropOver, setDropOver] = useState(false);
   const [safe, setSafe] = useState(true);
   const [stageW, setStageW] = useState(360);
   const clock = useRef<{ t0: number; wall: number } | null>(null);
@@ -178,7 +186,17 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
   return (
     <SpaceBetween size="s">
       <div style={{ display: 'flex', justifyContent: 'center' }}>
-        <div ref={stageRef} style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4 }}>
+        <div ref={stageRef} className={dropOver ? 'drop-zone-active' : undefined}
+          onDragOver={(e) => { if (!onDropFiles && !onDropAsset) return; e.preventDefault(); setDropOver(true); }}
+          onDragLeave={() => setDropOver(false)}
+          onDrop={(e) => {
+            setDropOver(false);
+            if (!onDropFiles && !onDropAsset) return;
+            e.preventDefault();
+            const raw = e.dataTransfer.getData('application/x-shorts-asset');
+            if (raw) onDropAsset?.(raw); else if (e.dataTransfer.files.length) onDropFiles?.([...e.dataTransfer.files]);
+          }}
+          style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4 }}>
           <video ref={auxRef} muted playsInline preload="auto" style={mainItem?.mediaKind === 'video' ? auxStyle : { display: 'none' }} />
           <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
             style={mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' }} />

@@ -157,7 +157,9 @@ def op_trim(tl: dict, op: dict, actor: str, assets: dict) -> dict:
     if it.get("type") != "clip":
         if "duration" in op:
             _guard(tl, f"items/{it['id']}/duration", actor)
-            it["duration"] = max(MIN_DURATION, float(op["duration"]))
+            dur = max(MIN_DURATION, float(op["duration"]))
+            retime_caption(it, float(it["start"]), dur)
+            it["duration"] = dur
         return {}
     for key in ("srcIn", "srcOut"):
         if key in op:
@@ -204,7 +206,9 @@ def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     if dest["kind"] == "video":
         dest["items"].insert(min(int(op.get("index", len(dest["items"]))), len(dest["items"])), it)
     else:
-        it["start"] = round(float(op.get("start", it["start"])), 4)
+        new_start = round(float(op.get("start", it["start"])), 4)
+        retime_caption(it, new_start, float(it["duration"]))
+        it["start"] = new_start
         dest["items"].append(it)
     return {}
 
@@ -268,9 +272,22 @@ OBJECT_PROPS = {"transform", "reframe", "kenBurns", "style", "position", "animat
                 "transitionOut", "box"}
 
 
+def retime_caption(it: dict, start: float, duration: float) -> None:
+    """Caption words hold timeline times: map them from the old span onto the new one (move = shift, stretch = scale)."""
+    if it.get("type") != "caption":
+        return
+    old_s, old_d = float(it["start"]), max(1e-6, float(it["duration"]))
+    k = duration / old_d
+    it["words"] = [{**w, "s": round(start + (w["s"] - old_s) * k, 3), "e": round(start + (w["e"] - old_s) * k, 3)}
+                   for w in it.get("words", [])]
+
+
 def op_update(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     _, it, _ = find_item(tl, op["itemId"])
     changed = []
+    st = op.get("set") or {}
+    if it.get("type") == "caption" and ("start" in st or "duration" in st) and "words" not in st:
+        retime_caption(it, float(st.get("start", it["start"])), max(MIN_DURATION, float(st.get("duration", it["duration"]))))
     for k, v in (op.get("set") or {}).items():
         if k not in UPDATABLE:
             raise OpError(f"Property {k} is not updatable")

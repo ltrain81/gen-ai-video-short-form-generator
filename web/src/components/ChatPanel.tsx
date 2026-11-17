@@ -14,6 +14,8 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '../api/realtime';
 import type { Asset } from '../api/types';
 import AssetPicker from './AssetPicker';
+import { ASSET_MIME } from './TimelineStrip';
+import { uploadAndFetch } from '../api/upload';
 import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 
@@ -38,6 +40,8 @@ interface Props {
   titles: Record<string, string>;
   suggestions?: string[];
   header?: ReactNode;
+  projectId?: string;
+  onError?: (msg: string) => void;
 }
 
 const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
@@ -56,11 +60,20 @@ const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
   remember: { ko: '선호 저장', en: 'Saving preference' },
 };
 
-export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header }: Props) {
+export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header, projectId, onError }: Props) {
   const { t } = useI18n();
   const [value, setValue] = useState('');
   const [attach, setAttach] = useState<Asset[]>([]);
   const [picker, setPicker] = useState(false);
+  const [dropOver, setDropOver] = useState(false);
+  const [uploading, setUploading] = useState(0);
+  const onFiles = (files: File[]) => {
+    setUploading((n) => n + files.length);
+    files.forEach((f) => uploadAndFetch(f, projectId ? { scope: 'project', projectId } : {})
+      .then((a) => setAttach((x) => [...x, a]))
+      .catch((e) => onError?.(`${f.name}: ${(e as Error).message}`))
+      .finally(() => setUploading((n) => n - 1)));
+  };
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [entries, busy]);
 
@@ -75,7 +88,15 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
   const showSuggestions = !busy && !!suggestions?.length && last?.role === 'assistant' && !last.question;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div className={dropOver ? 'drop-zone-active' : undefined} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
+      onDragOver={(e) => { if (!e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(ASSET_MIME)) return; e.preventDefault(); setDropOver(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOver(false); }}
+      onDrop={(e) => {
+        setDropOver(false);
+        const raw = e.dataTransfer.getData(ASSET_MIME);
+        if (raw) { e.preventDefault(); try { const a = JSON.parse(raw); setAttach((x) => x.some((y) => y.assetId === a.assetId) ? x : [...x, { ...a, displayTitle: a.title ?? a.assetId } as Asset]); } catch { /* ignore */ } return; }
+        if (e.dataTransfer.files.length) { e.preventDefault(); onFiles([...e.dataTransfer.files]); }
+      }}>
       {header}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px' }}>
         {entries.length === 0 && !busy && (
@@ -104,12 +125,12 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
       <div style={{ padding: '12px 16px 16px', borderTop: `1px solid ${awsui.colorBorderDividerDefault}` }}>
         <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={() => send()}
           actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || !value.trim()}
-          placeholder={busy ? t('agentWorking') : t('chatPlaceholder')} minRows={2} maxRows={8}
+          placeholder={busy ? t('agentWorking') : uploading ? `${t('uploading')} (${uploading})…` : t('chatPlaceholder')} minRows={2} maxRows={8}
           secondaryActions={<Button variant="icon" iconName="folder-open" ariaLabel={t('attachFromArchive')} onClick={() => setPicker(true)} />}
           secondaryContent={selectionLabel || attach.length ? (
             <SpaceBetween size="xs">
               {selectionLabel && <Token label={`${t('selected')}: ${selectionLabel}`} onDismiss={onClearSelection} dismissLabel={t('clear')} />}
-              {attach.length > 0 && <TokenGroup items={attach.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
+              {attach.length > 0 && <TokenGroup items={attach.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: a.status && a.status !== 'ready' ? t('analyzing') : t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
                 onDismiss={({ detail }) => setAttach(attach.filter((_, i) => i !== detail.itemIndex))} />}
             </SpaceBetween>
           ) : undefined} />

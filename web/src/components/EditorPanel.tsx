@@ -16,7 +16,7 @@ import { api } from '../api/client';
 import type { Asset, BrandKit } from '../api/types';
 import { useI18n } from '../i18n';
 import { fmtDate, fmtTime } from '../util';
-import type { EditOp } from './TimelineStrip';
+import { ASSET_MIME, type EditOp } from './TimelineStrip';
 import GeneratePanel from './GeneratePanel';
 import { useApp } from '../App';
 
@@ -97,6 +97,7 @@ function Inspector({ timeline, selected, time, onOps, projectId }: Pick<Props, '
       </SpaceBetween>
       <Box variant="small" color="text-body-secondary">{fmtTime(selected.start)} – {fmtTime(selected.start + selected.duration)} · {selected.duration.toFixed(2)}s
         {selected.provenance?.reason ? <><br />AI: {selected.provenance.reason}</> : null}</Box>
+      <TimingEditor item={selected} onMain={!!timeline.tracks.find((tr) => tr.kind === 'video' && tr.items.some((i) => i.id === selected.id))} onOps={onOps} />
       {selected.type === 'clip' && <ClipInspector c={selected} set={set} onOps={onOps} />}
       {selected.type === 'text' && <TextInspector x={selected} set={set} />}
       {selected.type === 'caption' && (
@@ -227,6 +228,38 @@ function TextInspector({ x, set }: { x: TextItem; set: (s: Record<string, unknow
   );
 }
 
+/** Exact start / length (seconds). Video & audio clips: length extends or shortens the source range; Alt-stretch on the timeline changes speed instead. */
+function TimingEditor({ item, onMain, onOps }: { item: Item; onMain: boolean; onOps: Props['onOps'] }) {
+  const { t } = useI18n();
+  const [start, setStart] = useState(item.start.toFixed(2));
+  const [dur, setDur] = useState(item.duration.toFixed(2));
+  useEffect(() => { setStart(item.start.toFixed(2)); setDur(item.duration.toFixed(2)); }, [item.id, item.start, item.duration]);
+  const media = item.type === 'clip' && item.mediaKind !== 'image';
+  const commitDur = () => {
+    const d = Number(dur);
+    if (!Number.isFinite(d) || d < 0.1 || Math.abs(d - item.duration) < 0.005) { setDur(item.duration.toFixed(2)); return; }
+    if (media && item.type === 'clip') onOps([{ op: 'trim', itemId: item.id, srcOut: +(item.srcIn + d * (item.speed ?? 1)).toFixed(3) }], 'length');
+    else onOps([{ op: 'trim', itemId: item.id, duration: +d.toFixed(3) }], 'length');
+  };
+  const commitStart = () => {
+    const s0 = Number(start);
+    if (!Number.isFinite(s0) || s0 < 0 || Math.abs(s0 - item.start) < 0.005) { setStart(item.start.toFixed(2)); return; }
+    onOps([{ op: 'move', itemId: item.id, start: +s0.toFixed(3) }], 'start');
+  };
+  return (
+    <ColumnLayout columns={2}>
+      <FormField label={t('startSec')} description={onMain ? t('mainTrackMagnetic') : undefined}>
+        <Input type="number" step={0.1} value={start} disabled={onMain} onChange={(e) => setStart(e.detail.value)}
+          onBlur={commitStart} onKeyDown={(e) => e.detail.key === 'Enter' && commitStart()} />
+      </FormField>
+      <FormField label={t('lengthSec')} description={media ? t('lengthHintMedia') : undefined}>
+        <Input type="number" step={0.1} value={dur} onChange={(e) => setDur(e.detail.value)}
+          onBlur={commitDur} onKeyDown={(e) => e.detail.key === 'Enter' && commitDur()} />
+      </FormField>
+    </ColumnLayout>
+  );
+}
+
 function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 'time' | 'onOps' | 'titles'>) {
   const { t } = useI18n();
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -271,7 +304,9 @@ function AddMedia({ timeline, time, onOps, titles }: Pick<Props, 'timeline' | 't
           onOps(ops as never, `add ${picked.length} clips`);
         }} />
       {assets.map((a) => (
-        <div key={a.assetId} style={{ display: 'flex', gap: 10, alignItems: 'center', borderBottom: `1px solid ${awsui.colorBorderDividerDefault}`, paddingBottom: 8 }}>
+        <div key={a.assetId} draggable title={t('dragToTimeline')}
+          onDragStart={(e) => { e.dataTransfer.setData(ASSET_MIME, JSON.stringify({ assetId: a.assetId, kind: a.kind, durationSec: a.durationSec, title: a.displayTitle })); e.dataTransfer.effectAllowed = 'copy'; }}
+          style={{ cursor: 'grab', display: 'flex', gap: 10, alignItems: 'center', borderBottom: `1px solid ${awsui.colorBorderDividerDefault}`, paddingBottom: 8 }}>
           {a.thumbnailUrl ? <img src={a.thumbnailUrl} alt="" style={{ width: 72, aspectRatio: '16/9', objectFit: 'cover', borderRadius: 3 }} /> : <div className="thumb-placeholder" style={{ width: 72 }} />}
           <div style={{ flex: 1, minWidth: 0 }}>
             <Box variant="small" fontWeight="bold">{titles[a.assetId] ?? a.displayTitle}</Box>

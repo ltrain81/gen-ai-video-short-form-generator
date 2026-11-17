@@ -67,3 +67,9 @@ function putPart(url: string, blob: Blob, onProgress: (loaded: number) => void, 
     xhr.send(blob);
   });
 }
+
+/** Upload and return the asset record (it is still being analyzed; status !== 'ready'). */
+export async function uploadAndFetch(file: File, opts: { scope?: 'archive' | 'project'; projectId?: string } = {}) {
+  const id = await uploadFile(file, () => undefined, opts);
+  return api.asset(id);
+}
