@@ -19,7 +19,7 @@ POOL = OUT["Shorts-Core"]["UserPoolId"]
 CLIENT = OUT["Shorts-Core"]["UserPoolClientId"]
 API = OUT["Shorts-Api"]["ApiUrl"]
 EMAIL = os.environ.get("E2E_EMAIL", "e2e-test@example.com")
-PASSWORD = os.environ.get("E2E_PASSWORD", "E2e-test-password-123")
+PASSWORD = os.environ["E2E_PASSWORD"]  # never commit credentials; set in your shell
 
 idp = boto3.client("cognito-idp", region_name=REGION)
 
