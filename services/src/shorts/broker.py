@@ -115,6 +115,7 @@ class Relay:
         self.steps: list[dict] = []  # ordered: {kind: tool|thought, ...} — persisted for transparency
         self._started: dict[str, float] = {}
         self.model: str | None = None
+        self.session_id: str | None = None
         self.effort: str | None = None
 
     def thought(self, text: str) -> None:
@@ -170,45 +171,98 @@ def recap(project_id: str, limit: int = 12) -> str:
             + "\n".join(lines[-limit:]) + "\n]")
 
 
-def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> None:
+SESSION_MAX_AGE_SEC = 7 * 3600  # AgentCore compute lifetime is 8 h; start fresh before it expires
+
+
+def _retire_session(sessions, sid: str | None) -> None:
+    """Delete a session we no longer use (docs: delete sessions the application no longer needs)."""
+    if not sid:
+        return
+    try:
+        sessions.delete(sid)
+    except Exception:  # noqa: BLE001 - best effort cleanup
+        log.info("Could not delete BMA session %s", sid, exc_info=True)
+
+
+def diagnose_session(sid: str | None) -> None:
+    """Log the service-side error details of a failed turn (session.error + the latest items)."""
+    if not sid:
+        return
+    try:
+        sessions = _openai_client().beta.agents.sessions
+        s = sessions.retrieve(sid).model_dump(mode="json", warnings=False)
+        items = sessions.items.list(sid, limit=10, order="desc").model_dump(mode="json", warnings=False).get("data", [])
+        log.warning("BMA session %s status=%s error=%s last_items=%s", sid, s.get("status"),
+                    json.dumps(s.get("error"), default=str)[:1500],
+                    json.dumps([{k: it.get(k) for k in ("type", "status", "name", "error", "turn_id")} for it in items],
+                               default=str)[:2500])
+    except Exception:  # noqa: BLE001
+        log.info("Could not diagnose BMA session %s", sid, exc_info=True)
+
+
+def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay, fresh: bool = False) -> None:
     client = _openai_client()
     sessions = client.beta.agents.sessions
     agent_state = project.get("agent") or {}
     model, effort = agent_settings(project)
     relay.model, relay.effort = model, effort
-    sid = agent_state.get("sessionId") if agent_state.get("backend") == "bma" else None
-    if sid and (agent_state.get("model"), agent_state.get("effort")) != (model, effort):
-        sid = None  # settings changed → new session (with a recap)
+    runtime_version = os.environ.get("BMA_RUNTIME_VERSION", "")
+    sid = agent_state.get("sessionId") if agent_state.get("backend") == "bma" and not fresh else None
+    stale = None
+    if sid:
+        if (agent_state.get("model"), agent_state.get("effort")) != (model, effort):
+            stale = "settings changed"
+        elif runtime_version and agent_state.get("runtimeVersion") != runtime_version:
+            stale = "runtime image updated"  # a running session keeps its old processes after a Runtime update
+        elif time.time() - float(agent_state.get("createdAt") or 0) > SESSION_MAX_AGE_SEC:
+            stale = "near the 8 h compute lifetime"
+    if stale:
+        log.info("Replacing BMA session %s: %s", sid, stale)
+        _retire_session(sessions, sid)
+        sid = None
     stream = None
     if sid:
         try:
             s = sessions.retrieve(sid).model_dump(mode="json", warnings=False)
-            if s.get("status") in {"failed", "expired", "terminated", "cancelled", "deleted"}:
-                raise RuntimeError(f"session {s.get('status')}")
+            if s.get("status") == "failed":
+                raise RuntimeError(f"session failed: {json.dumps(s.get('error'), default=str)[:300]}")
+            if s.get("status") == "in_progress":
+                raise RuntimeError("session still busy with a previous turn")
             stream = sessions.events.stream(sid, extra_query={"stream": "true"})
             sessions.events.create(sid, events=[{"type": "agent.session.input.message", "input": [
                 {"role": "user", "content": [{"type": "input_text", "text": user_input}]}]}])
             bindings.refresh("bma", agent_state["environmentId"])
-        except Exception:  # noqa: BLE001 - expired/broken session (the service answers 500) → start fresh
+        except Exception:  # noqa: BLE001 - expired/broken session (the service may answer 500) → start fresh
             log.warning("Resuming BMA session %s failed; starting a new one", sid, exc_info=True)
             if stream is not None:
                 try:
                     stream.close()
                 except Exception:  # noqa: BLE001
                     pass
+            _retire_session(sessions, sid)
             stream, sid = None, None
     if not sid:
         prior = "" if not project.get("currentVersion") else (
             "\n[Context: this project already has a timeline (version "
             f"{project['currentVersion']}); call get_context before changing it.]")
-        stream = sessions.create(
-            agent={"model": model, "instructions": _instructions(p), "tools": [_mcp_tool()],
-                   "reasoning": {"effort": effort, "summary": "auto"}},
-            environment={"type": "aws_bedrock_agentcore", "runtime_arn": _env("BMA_RUNTIME_ARN"),
-                         "runtime_qualifier": "DEFAULT", "workspace_directory": "/home/app/workspace",
-                         "capability_directories": ["/opt/bma/plugins"]},
-            input=user_input + prior + recap(project["projectId"]), stream=True,
-            extra_body={"role_arn": _env("BMA_SESSION_ROLE_ARN")})
+        agent_cfg = {"model": model, "instructions": _instructions(p), "tools": [_mcp_tool()],
+                     "reasoning": {"effort": effort, "summary": "auto"}}
+        kwargs = dict(environment={"type": "aws_bedrock_agentcore", "runtime_arn": _env("BMA_RUNTIME_ARN"),
+                                   "runtime_qualifier": "DEFAULT", "workspace_directory": "/home/app/workspace",
+                                   "capability_directories": ["/opt/bma/plugins"]},
+                      input=user_input + prior + recap(project["projectId"]), stream=True,
+                      extra_body={"role_arn": _env("BMA_SESSION_ROLE_ARN")})
+        try:
+            stream = sessions.create(agent=agent_cfg, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            # `reasoning` is outside the documented preview surface: if it is ever rejected, run without it.
+            if "reasoning" not in str(exc):
+                raise
+            log.warning("reasoning config rejected; creating the session without it")
+            agent_cfg.pop("reasoning")
+            relay.effort = None
+            stream = sessions.create(agent=agent_cfg, **kwargs)
+        relay.session_id = None
     thinking: dict[str, str] = {}
     with stream:
         for ev in stream:
@@ -223,7 +277,11 @@ def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> 
                         env_id = sessions.retrieve(sid).model_dump(mode="json")["environment"]["id"]
                     bindings.bind("bma", env_id, p, project["projectId"], sid)
                     ddb.update(f"PROJ#{project['projectId']}", "META", {"agent": {
-                        "backend": "bma", "sessionId": sid, "environmentId": env_id, "model": model, "effort": effort}})
+                        "backend": "bma", "sessionId": sid, "environmentId": env_id, "model": model, "effort": effort,
+                        "runtimeVersion": runtime_version, "createdAt": int(time.time())}})
+            relay.session_id = sid
+            if kind.startswith("agent.session.environment.") and kind.split(".")[-1] in {"expired", "failed", "disconnected"}:
+                raise RuntimeError(f"execution environment {kind.split('.')[-1]}")
             if kind.endswith("output_text.delta"):
                 relay.delta(d.get("delta", ""))
             elif kind.endswith("reasoning_summary_text.delta"):
@@ -249,8 +307,8 @@ def run_bma_turn(p: Principal, project: dict, user_input: str, relay: Relay) -> 
                         relay.thought("\n".join(texts))
             elif kind.split(".")[-1] in {"completed", "failed", "cancelled"} and ".turn." in kind:
                 turn = d.get("turn") or {}
-                if turn.get("error"):
-                    raise RuntimeError(str(turn["error"])[:500])
+                if turn.get("error") or kind.endswith("failed"):
+                    raise RuntimeError(str(turn.get("error") or kind)[:500])
                 break
 
 
@@ -290,10 +348,28 @@ def run_turn(event: dict) -> None:
             from . import strands_backend
             strands_backend.run_turn(p, project, user_input, relay)
         else:
-            run_bma_turn(p, project, user_input, relay)
+            try:
+                run_bma_turn(p, project, user_input, relay)
+            except Exception as first:  # noqa: BLE001
+                # A broken service-side session fails every turn ("internal_error"): record why, drop it and retry
+                # once in a fresh session that gets a recap of the chat (the timeline itself is persistent).
+                log.warning("BMA turn failed (%s); retrying in a fresh session", str(first)[:200])
+                diagnose_session(relay.session_id)
+                _retire_session(_openai_client().beta.agents.sessions, relay.session_id)
+                old_env = ((ddb.get(f"PROJ#{project_id}", "META") or {}).get("agent") or {}).get("environmentId")
+                if old_env:
+                    projects.release_lock(project_id, f"agent:{old_env}")
+                ddb.update(f"PROJ#{project_id}", "META", {"agent": {"backend": "bma"}})
+                relay.thought("이전 세션에 문제가 있어 새 세션으로 이어서 진행합니다 / Continuing in a fresh session")
+                fresh_project = ddb.get(f"PROJ#{project_id}", "META", consistent=True) or project
+                run_bma_turn(p, fresh_project, user_input, relay, fresh=True)
     except Exception as exc:  # noqa: BLE001
         log.exception("Turn failed")
         error = str(exc)[:500]
+        # Never resume a session whose turn failed.
+        agent_now = (ddb.get(f"PROJ#{project_id}", "META") or {}).get("agent") or {}
+        if agent_now.get("backend") == "bma" and agent_now.get("sessionId"):
+            ddb.update(f"PROJ#{project_id}", "META", {"agent": {"backend": "bma", "environmentId": agent_now.get("environmentId")}})
         _ensure_brand(p, project_id)
     finally:
         relay.flush()

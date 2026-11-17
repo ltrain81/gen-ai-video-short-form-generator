@@ -8,6 +8,7 @@ import { CSSProperties, PointerEvent as RPointerEvent, WheelEvent as RWheelEvent
 import type { AssetMedia } from '../api/types';
 import { useI18n } from '../i18n';
 import { fadeMul, itemMotion, kfAt, srcAt } from '../kf';
+import SpriteFrame from './SpriteFrame';
 import { fmtTime } from '../util';
 
 /**
@@ -30,6 +31,8 @@ interface Props {
   editable?: boolean;
   onOps?: (ops: Record<string, unknown>[], message: string) => void;
   onSelect?: (item: Item | undefined, trackId?: string) => void;
+  /** A main-track clip the user is about to jump to (hovered in the timeline): pre-load it. */
+  prefetchId?: string;
 }
 
 type Guide = { axis: 'x' | 'y'; at: number };
@@ -194,7 +197,7 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain', t = c.sta
 }
 
 export default function Preview({ timeline: timelineIn, media, time, onTime, selectedId, playing: playingProp, onPlayingChange, onDropFiles, onDropAsset,
-  editable, onOps, onSelect }: Props) {
+  editable, onOps, onSelect, prefetchId }: Props) {
   const { t } = useI18n();
   // Live overrides while dragging on the canvas; cleared when the saved timeline comes back.
   const [ov, setOv] = useState<Record<string, Partial<Item>>>({});
@@ -206,7 +209,14 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const [editingId, setEditingId] = useState<string | null>(null);
   const dragRef = useRef<CanvasDrag | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const mainRef = useRef<HTMLVideoElement>(null);
+  // Two main-layer video elements: the front one plays; the back one is pre-loaded and pre-seeked to the next clip
+  // (or the clip under the mouse in the timeline), so cuts and clicks don't wait for the network.
+  const vidA = useRef<HTMLVideoElement>(null);
+  const vidB = useRef<HTMLVideoElement>(null);
+  const [front, setFront] = useState<'A' | 'B'>('A');
+  const [mainReady, setMainReady] = useState(false); // false while the visible clip is loading/seeking
+  const frontRef = front === 'A' ? vidA : vidB;
+  const backRef = front === 'A' ? vidB : vidA;
   const musicRef = useRef<HTMLAudioElement>(null);
   const auxRef = useRef<HTMLVideoElement>(null); // second layer of the main clip: blurred fill / split bottom
   const [playingLocal, setPlayingLocal] = useState(false);
@@ -239,6 +249,18 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const music = tracks.find((t) => t.kind === 'audio' && t.audioRole === 'music');
 
   const mainItem = main && activeAt(main.items, time) as ClipItem | undefined;
+  const nextMain = useMemo(() => {
+    if (!main) return undefined;
+    const i = mainItem ? main.items.findIndex((x) => x.id === mainItem.id) : -1;
+    return (main.items.slice(i + 1).find((x) => x.type === 'clip' && (x as ClipItem).mediaKind === 'video') ?? undefined) as ClipItem | undefined;
+  }, [main, mainItem]);
+  // Hovering any item (clip, text, caption…) means "I may jump to its start": pre-load the main clip playing then.
+  const prefetch = useMemo(() => {
+    if (!prefetchId || !main) return undefined;
+    const hovered = timelineIn.tracks.flatMap((tr) => tr.items).find((x) => x.id === prefetchId);
+    if (!hovered) return undefined;
+    return activeAt(main.items, hovered.start + 0.001) as ClipItem | undefined;
+  }, [prefetchId, main, timelineIn]);
   const overlayItem = [...activeLayers].reverse().find((l) => !isPip(l.item))?.item; // topmost full-frame layer
   const audioItems = tracks.map((tr, idx) => ({ tr, idx })).filter(({ tr }) => tr.kind === 'audio' && !tr.muted && tr !== music)
     .flatMap(({ tr }) => tr.items.filter((i) => i.type === 'clip' && time >= i.start && time < i.start + i.duration)
@@ -281,7 +303,31 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   }, [playing]);
 
   useEffect(() => {
-    syncEl(mainRef.current, mainItem?.mediaKind === 'video' ? mainItem : undefined, time, mainItem && media[mainItem.assetId]?.proxyUrl);
+    const cur = mainItem?.mediaKind === 'video' ? mainItem : undefined;
+    const fEl = frontRef.current, bEl = backRef.current;
+    if (cur && fEl && bEl && fEl.dataset.item !== cur.id && bEl.dataset.item === cur.id && bEl.readyState >= 1) {
+      setFront(front === 'A' ? 'B' : 'A'); // the back element already holds this clip: swap instantly
+      setMainReady(bEl.readyState >= 2);
+      return;
+    }
+    if (fEl) fEl.dataset.item = cur?.id ?? '';
+    syncEl(fEl, cur, time, cur && media[cur.assetId]?.proxyUrl);
+    // Prepare the back element for what comes next.
+    const nxt = prefetch && prefetch.id !== cur?.id ? prefetch : nextMain;
+    // Only after the visible clip has a frame: don't compete with it for bandwidth (the index alone can be MBs).
+    if (bEl && nxt && nxt.mediaKind === 'video' && (!cur || (fEl?.readyState ?? 0) >= 2)) {
+      const url = media[nxt.assetId]?.proxyUrl;
+      if (url) {
+        if (bEl.dataset.src !== url) { bEl.dataset.src = url; bEl.src = url; }
+        const want = srcTime(nxt, nxt.start);
+        bEl.dataset.item = nxt.id;
+        if (Math.abs(bEl.currentTime - want) > 0.05) {
+          if (bEl.readyState >= 1) bEl.currentTime = want;
+          else bEl.addEventListener('loadedmetadata', () => { bEl.currentTime = want; }, { once: true });
+        }
+        if (!bEl.paused) bEl.pause();
+      }
+    }
     const lay = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
     const rb = (mainItem?.reframe ?? {}) as { background?: string };
     syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' || (lay === 'box' && rb.background === 'blur') ? mainItem : undefined, time,
@@ -290,7 +336,8 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     const mu = musicItem && (media[musicItem.assetId]?.audioUrl ?? media[musicItem.assetId]?.proxyUrl);
     syncEl(musicRef.current, musicItem, time, mu);
     if (musicRef.current) musicRef.current.volume = Math.min(1, (music?.volume ?? 0.6) * (musicItem?.volume ?? 1));
-  }, [time, mainItem, musicItem, media, syncEl, music?.volume]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [time, mainItem, musicItem, media, syncEl, music?.volume, front, prefetch?.id, nextMain?.id]);
 
   // Playback clock (wall-clock based; media elements follow).
   useEffect(() => {
@@ -496,8 +543,20 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
           style={{ position: 'relative', width: stageW, height: stageH, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4,
             cursor: canEdit && mainItem?.mediaKind === 'video' ? 'grab' : undefined, touchAction: canEdit ? 'none' : undefined, outline: selectedId && selectedId === mainItem?.id ? '2px solid #22d3ee' : undefined, outlineOffset: -2 }}>
           <video ref={auxRef} muted playsInline preload="auto" style={mainItem?.mediaKind === 'video' ? auxStyle : { display: 'none' }} />
-          <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
-            style={mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' }} />
+          {(['A', 'B'] as const).map((k) => (
+            <video key={k} ref={k === 'A' ? vidA : vidB} muted={k !== front || main?.muted} playsInline preload="auto"
+              onSeeking={() => { if (k === front) setMainReady(false); }} onEmptied={() => { if (k === front) setMainReady(false); }}
+              onSeeked={(e) => { if (k === front && e.currentTarget.readyState >= 2) setMainReady(true); }}
+              onLoadedData={() => { if (k === front) setMainReady(true); }} onCanPlay={() => { if (k === front) setMainReady(true); }}
+              style={k === front
+                ? (mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' })
+                : { position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, pointerEvents: 'none' }} />
+          ))}
+          {mainItem?.mediaKind === 'video' && !mainReady && (
+            <div style={{ ...mainStyle(mainItem), overflow: 'hidden', pointerEvents: 'none' }}>
+              <SpriteFrame m={media[mainItem.assetId]} t={srcTime(mainItem, time)} style={{ width: '100%', height: '100%', aspectRatio: 'auto' }} />
+            </div>
+          )}
           {mainItem?.mediaKind === 'image' && imageEl(mainItem)}
           {activeLayers.map(({ idx, item: o }) => {
             const z = 2 + idx * 2;

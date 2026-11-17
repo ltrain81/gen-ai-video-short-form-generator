@@ -104,6 +104,7 @@ export default function ProjectPage() {
   const undoStack = useRef<number[]>([]);
   const redoStack = useRef<number[]>([]);
   const [playing, setPlaying] = useState(false);
+  const [hoverItem, setHoverItem] = useState<string | undefined>();
   const [helpOpen, setHelpOpen] = useState(false);
   const [pending, setPending] = useState<Record<string, { name: string; status: string; pct: number }>>({});
   const clipboard = useRef<{ item: Item; trackId: string } | null>(null);
@@ -501,7 +502,7 @@ export default function ProjectPage() {
         </div>
         <div className="studio-stage">
           <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id}
-            playing={playing} onPlayingChange={setPlaying}
+            playing={playing} onPlayingChange={setPlaying} prefetchId={hoverItem}
             editable={!busy && !saving} onOps={applyOps} onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)}
             onDropFiles={busy ? undefined : (f) => dropFiles(f, mainTarget())}
             onDropAsset={busy ? undefined : (raw) => { try { dropAsset(JSON.parse(raw) as DragAsset, mainTarget()); } catch { /* ignore */ } }} />
@@ -518,7 +519,7 @@ export default function ProjectPage() {
             <TimelineStrip timeline={timeline} time={time} onSeek={(x) => { setPlaying(false); setTime(x); }} selectedId={selected?.item.id}
               onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles} thumbs={thumbs}
               editable={mode === 'manual' && !busy} droppable={!busy} onOps={applyOps}
-              onDropAsset={dropAsset} onDropFiles={dropFiles} onAction={itemAction} canPaste={hasClip} />
+              onDropAsset={dropAsset} onDropFiles={dropFiles} onAction={itemAction} canPaste={hasClip} onHoverItem={setHoverItem} />
           </ExpandableSection>
         </div>
       </section>

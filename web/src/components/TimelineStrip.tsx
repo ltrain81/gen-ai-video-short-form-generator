@@ -37,6 +37,8 @@ interface Props {
   onDropAsset?: (a: DragAsset, at: DropTarget) => void;
   onDropFiles?: (files: File[], at: DropTarget) => void;
   onAction?: (action: ItemAction, item: Item, trackId: string) => void;
+  /** Hovering a clip: the preview pre-loads it so the click is instant. */
+  onHoverItem?: (itemId: string | undefined) => void;
   canPaste?: boolean;
 }
 
@@ -51,7 +53,7 @@ type Drag = { kind: 'move' | 'trimL' | 'trimR'; item: Item; trackId: string; tra
 
 /** Timeline: read-only view in AI mode; drag / trim / drop / zoom / snap editing in manual mode. */
 export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSelect, titles, thumbs = {}, editable, droppable, onOps,
-  onDropAsset, onDropFiles, onAction, canPaste }: Props) {
+  onDropAsset, onDropFiles, onAction, canPaste, onHoverItem }: Props) {
   const { t } = useI18n();
   const duration = timelineDuration(timeline);
   // Leave room after the end so things can be dropped / dragged past the last clip.
@@ -287,6 +289,7 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
                     <div key={i.id}
                       title={`${label(i, titles)}\n${fmtTime(i.start)}–${fmtTime(i.start + i.duration)}${i.provenance?.reason ? `\nAI: ${i.provenance.reason}` : ''}`}
                       onClick={(e) => { e.stopPropagation(); onSelect(i, tr.id); if (!editable) onSeek(i.start); }}
+                      onMouseEnter={() => onHoverItem?.(i.id)} onMouseLeave={() => onHoverItem?.(undefined)}
                       onContextMenu={(e) => { if (!editable || !onAction) return; e.preventDefault(); onSelect(i, tr.id); setMenu({ x: e.clientX, y: e.clientY, item: i, trackId: tr.id }); }}
                       onPointerDown={(e) => start(e, 'move', i, tr.id, tr.kind)}
                       className="tl-item"

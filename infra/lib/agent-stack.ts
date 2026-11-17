@@ -147,7 +147,8 @@ export function onSubscribe(ctx) {
       agentRuntimeArtifact: { containerConfiguration: { containerUri: image.imageUri } },
       networkConfiguration: { networkMode: 'PUBLIC' },
       protocolConfiguration: 'HTTP',
-      lifecycleConfiguration: { idleRuntimeSessionTimeout: 1800, maxLifetime: 28800 },
+      // BMA preview guidance: keep idle timeout and max lifetime at 8 h (compute replacement drops running processes).
+      lifecycleConfiguration: { idleRuntimeSessionTimeout: 28800, maxLifetime: 28800 },
       environmentVariables: {
         SHORTS_TOOLS_URL: toolsApi.apiEndpoint,
         AWS_REGION: this.region,
@@ -183,6 +184,9 @@ export function onSubscribe(ctx) {
         ORCHESTRATOR: 'bma',
         BMA_MODEL_ID: props.bmaModelId,
         BMA_REASONING_EFFORT: 'high',
+        // Changes with every runtime image: sessions started on an older image are replaced (a running session keeps
+        // its old processes after a Runtime update).
+        BMA_RUNTIME_VERSION: image.assetHash,
         BMA_RUNTIME_ARN: runtimeArn,
         BMA_SESSION_ROLE_ARN: sessionRole.roleArn,
         STRANDS_MODEL_ID: 'us.openai.gpt-6.1-sol',

@@ -17,6 +17,7 @@ import type { Asset, AssetMedia } from '../api/types';
 import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 import AssetPicker from './AssetPicker';
+import SpriteFrame from './SpriteFrame';
 
 /* ------------------------------------------------------------------ spec types (mirror services/ui_widgets.py) */
 type Opt = { value: string; label: string; description?: string; assetId?: string; startSec?: number; endSec?: number; color?: string };
@@ -51,6 +52,8 @@ function ClipView({ assetId, start = 0, end, ctx, height = 96, controls, onTime,
   onTime?: (t: number) => void; seekTo?: number; style?: CSSProperties;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const [live, setLive] = useState(!!controls); // hover cards load video only when hovered; the frame comes from sprites
+  const [ready, setReady] = useState(false);
   const m = ctx.media[assetId];
   const url = m?.proxyUrl;
   useEffect(() => { if (ref.current && seekTo != null && Math.abs(ref.current.currentTime - seekTo) > 0.05) ref.current.currentTime = seekTo; }, [seekTo]);
@@ -60,11 +63,18 @@ function ClipView({ assetId, start = 0, end, ctx, height = 96, controls, onTime,
       : <div className="thumb-placeholder" style={{ height, ...style }} />;
   }
   return (
-    <video ref={ref} src={`${url}#t=${start.toFixed(2)}`} muted={!controls} playsInline preload="metadata" controls={controls}
-      style={{ width: '100%', height, objectFit: 'cover', borderRadius: 4, background: '#000', display: 'block', ...style }}
-      onMouseEnter={(e) => { if (!controls) { e.currentTarget.currentTime = start; e.currentTarget.play().catch(() => undefined); } }}
-      onMouseLeave={(e) => { if (!controls) { e.currentTarget.pause(); e.currentTarget.currentTime = start; } }}
-      onTimeUpdate={(e) => { onTime?.(e.currentTarget.currentTime); if (end != null && e.currentTarget.currentTime > end) { e.currentTarget.currentTime = start; if (controls) e.currentTarget.pause(); } }} />
+    <div style={{ position: 'relative', height, borderRadius: 4, overflow: 'hidden', background: '#000', ...style }}
+      onMouseEnter={() => setLive(true)}>
+      {!ready && <SpriteFrame m={m} t={start} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', aspectRatio: 'auto' }} />}
+      {live && (
+        <video ref={ref} src={`${url}#t=${start.toFixed(2)}`} muted={!controls} playsInline preload="auto" controls={controls}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: ready ? 1 : 0 }}
+          onLoadedData={(e) => { setReady(true); if (!controls) { e.currentTarget.currentTime = start; e.currentTarget.play().catch(() => undefined); } }}
+          onMouseEnter={(e) => { if (!controls) { e.currentTarget.currentTime = start; e.currentTarget.play().catch(() => undefined); } }}
+          onMouseLeave={(e) => { if (!controls) { e.currentTarget.pause(); e.currentTarget.currentTime = start; } }}
+          onTimeUpdate={(e) => { onTime?.(e.currentTarget.currentTime); if (end != null && e.currentTarget.currentTime > end) { e.currentTarget.currentTime = start; if (controls) e.currentTarget.pause(); } }} />
+      )}
+    </div>
   );
 }
 
