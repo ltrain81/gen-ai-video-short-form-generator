@@ -1,13 +1,14 @@
 import Avatar from '@cloudscape-design/chat-components/avatar';
-import ChatBubble from '@cloudscape-design/chat-components/chat-bubble';
 import LoadingBar from '@cloudscape-design/chat-components/loading-bar';
-import Badge from '@cloudscape-design/components/badge';
+import SupportPromptGroup from '@cloudscape-design/chat-components/support-prompt-group';
 import Box from '@cloudscape-design/components/box';
-import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import Button from '@cloudscape-design/components/button';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import PromptInput from '@cloudscape-design/components/prompt-input';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
+import Token from '@cloudscape-design/components/token';
+import * as awsui from '@cloudscape-design/design-tokens';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '../api/realtime';
 import { useI18n } from '../i18n';
@@ -32,7 +33,7 @@ interface Props {
   onAnswer: (questionId: string, value: unknown, display: string) => void;
   thumbs: Record<string, string | undefined>;
   titles: Record<string, string>;
-  compact?: boolean;
+  suggestions?: string[];
   header?: ReactNode;
 }
 
@@ -52,66 +53,97 @@ const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
   remember: { ko: '선호 저장', en: 'Saving preference' },
 };
 
-export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, compact, header }: Props) {
-  const { t, lang } = useI18n();
+export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header }: Props) {
+  const { t } = useI18n();
   const [value, setValue] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [entries]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [entries, busy]);
 
-  const send = () => {
-    const v = value.trim();
+  const send = (text = value) => {
+    const v = text.trim();
     if (!v || busy) return;
     onSend(v);
     setValue('');
   };
+  const last = entries[entries.length - 1];
+  const showSuggestions = !busy && !!suggestions?.length && last?.role === 'assistant' && !last.question;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: compact ? 'auto' : 'calc(100vh - 140px)', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {header}
-      <div style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
-        <SpaceBetween size="m">
-          {entries.map((e) => (
-            <ChatBubble key={e.id} type={e.role === 'user' ? 'outgoing' : 'incoming'} ariaLabel={e.role}
-              avatar={e.role === 'user' ? <Avatar ariaLabel="you" tooltipText="you" initials="U" />
-                : <Avatar color="gen-ai" iconName="gen-ai" ariaLabel="AI" tooltipText="AI" loading={e.pending && !e.text} />}
-              showLoadingBar={e.pending}>
-              <SpaceBetween size="xs">
-                {e.text && <Markdown text={e.text} />}
-                {!!e.tools?.length && (() => {
-                  const last = e.tools[e.tools.length - 1];
-                  const running = e.tools.find((x) => x.status === 'in_progress');
-                  const head = running ? (TOOL_LABELS[running.name]?.[lang] ?? running.name) : t('stepsDone', { n: e.tools.length });
-                  return (
-                    <ExpandableSection variant="footer" headerText={
-                      <StatusIndicator type={running ? 'loading' : last.status === 'failed' ? 'warning' : 'success'}>{head}</StatusIndicator>}>
-                      <SpaceBetween direction="horizontal" size="xxs">
-                        {e.tools.map((x, i) => (
-                          <StatusIndicator key={i} type={x.status === 'completed' ? 'success' : x.status === 'failed' ? 'error' : 'loading'}>
-                            {TOOL_LABELS[x.name]?.[lang] ?? x.name}
-                          </StatusIndicator>
-                        ))}
-                      </SpaceBetween>
-                    </ExpandableSection>
-                  );
-                })()}
-                {e.question && <QuestionCard q={e.question} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />}
-                {e.error && <StatusIndicator type="error">{e.error}</StatusIndicator>}
-              </SpaceBetween>
-            </ChatBubble>
-          ))}
-          {busy && !entries.some((e) => e.pending) && <LoadingBar variant="gen-ai" />}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px' }}>
+        {entries.length === 0 && !busy && (
+          <Box textAlign="center" color="text-body-secondary" padding={{ top: 'xxxl' }}>{t('chatEmpty')}</Box>
+        )}
+        <SpaceBetween size="l">
+          {entries.map((e) => (e.role === 'user' ? <UserMessage key={e.id} text={e.text} /> : (
+            <AssistantMessage key={e.id} entry={e} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />
+          )))}
+          {busy && !entries.some((e) => e.pending) && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <Avatar color="gen-ai" iconName="gen-ai" ariaLabel="AI" loading />
+              <div style={{ flex: 1, paddingTop: 10 }}><LoadingBar variant="gen-ai" /></div>
+            </div>
+          )}
+          {showSuggestions && (
+            <div style={{ paddingLeft: 44 }}>
+              <SupportPromptGroup ariaLabel={t('suggestions')} alignment="horizontal"
+                items={suggestions!.map((s, i) => ({ id: String(i), text: s }))}
+                onItemClick={({ detail }) => send(suggestions![Number(detail.id)])} />
+            </div>
+          )}
           <div ref={endRef} />
         </SpaceBetween>
       </div>
-      {selectionLabel && (
-        <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-          <Badge color="blue">{t('selected')}: {selectionLabel}</Badge>
-          <Button variant="inline-link" onClick={onClearSelection}>{t('clear')}</Button>
+      <div style={{ padding: '12px 16px 16px', borderTop: `1px solid ${awsui.colorBorderDividerDefault}` }}>
+        <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={() => send()}
+          actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || !value.trim()}
+          placeholder={busy ? t('agentWorking') : t('chatPlaceholder')} minRows={2} maxRows={8}
+          secondaryContent={selectionLabel ? (
+            <Token label={`${t('selected')}: ${selectionLabel}`} onDismiss={onClearSelection} dismissLabel={t('clear')} />
+          ) : undefined} />
+      </div>
+    </div>
+  );
+}
+
+function UserMessage({ text }: { text: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{
+        maxWidth: '82%', padding: '10px 14px', whiteSpace: 'pre-wrap', lineHeight: 1.5,
+        background: awsui.colorBackgroundChatBubbleIncoming,
+        borderRadius: awsui.borderRadiusChatBubble,
+      }}>{text}</div>
+    </div>
+  );
+}
+
+function AssistantMessage({ entry: e, onAnswer, thumbs, titles }: { entry: ChatEntry; onAnswer: Props['onAnswer']; thumbs: Props['thumbs']; titles: Props['titles'] }) {
+  const { t, lang } = useI18n();
+  const tools = e.tools ?? [];
+  const running = tools.find((x) => x.status === 'in_progress');
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <Avatar color="gen-ai" iconName="gen-ai" ariaLabel="AI" tooltipText="AI" loading={e.pending && !e.text} />
+      <div style={{ flex: 1, minWidth: 0, paddingTop: 4, lineHeight: 1.6 }}>
+        <SpaceBetween size="s">
+          {tools.length > 0 && (
+            <ExpandableSection variant="footer" headerText={
+              <StatusIndicator type={running || e.pending ? 'loading' : tools.some((x) => x.status === 'failed') ? 'warning' : 'success'} colorOverride="grey">
+                {running ? (TOOL_LABELS[running.name]?.[lang] ?? running.name) : e.pending ? t('agentWorking') : t('stepsDone', { n: tools.length })}
+              </StatusIndicator>}>
+              <ol style={{ margin: 0, paddingLeft: 18, color: awsui.colorTextBodySecondary, fontSize: 13 }}>
+                {tools.map((x, i) => <li key={i}>{TOOL_LABELS[x.name]?.[lang] ?? x.name}{x.status === 'failed' ? ' ⚠︎' : ''}</li>)}
+              </ol>
+            </ExpandableSection>
+          )}
+          {e.text && <Markdown text={e.text} />}
+          {e.pending && !e.text && !tools.length && <LoadingBar variant="gen-ai" />}
+          {e.question && <QuestionCard q={e.question} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />}
+          {e.error && <StatusIndicator type="error">{e.error}</StatusIndicator>}
         </SpaceBetween>
-      )}
-      <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={send}
-        actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || !value.trim()}
-        placeholder={busy ? t('agentWorking') : t('chatPlaceholder')} minRows={compact ? 3 : 2} maxRows={8} />
+      </div>
     </div>
   );
 }
@@ -122,7 +154,7 @@ function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, 
   const [done, setDone] = useState(false);
   const answer = (value: unknown, display: string) => { setDone(true); onAnswer(q.questionId, value, display); };
   return (
-    <Box padding="s">
+    <div style={{ border: `1px solid ${awsui.colorBorderDividerDefault}`, borderRadius: 6, padding: 14, background: awsui.colorBackgroundContainerContent }}>
       <SpaceBetween size="s">
         <Box fontWeight="bold">{q.question}</Box>
         {q.kind === 'choice' && (
@@ -141,10 +173,10 @@ function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, 
         )}
         {q.kind === 'clips' && (
           <SpaceBetween size="xs">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
               {(q.clips ?? []).map((c, i) => (
                 <div key={i} onClick={() => !done && setPicked(q.multiple ? (picked.includes(i) ? picked.filter((x) => x !== i) : [...picked, i]) : [i])}
-                  style={{ cursor: done ? 'default' : 'pointer', borderRadius: 4, padding: 4, outline: picked.includes(i) ? '2px solid #0972d3' : '1px solid rgba(127,127,127,0.3)' }}>
+                  style={{ cursor: done ? 'default' : 'pointer', borderRadius: 4, padding: 4, outline: picked.includes(i) ? '2px solid #0972d3' : `1px solid ${awsui.colorBorderDividerDefault}` }}>
                   {thumbs[c.assetId] ? <img className="thumb" src={thumbs[c.assetId]} alt="" /> : <div className="thumb-placeholder" />}
                   <Box variant="small" fontWeight="bold">{c.label ?? titles[c.assetId] ?? c.assetId}</Box>
                   <Box variant="small" color="text-body-secondary">{fmtTime(c.startSec)}–{fmtTime(c.endSec)}</Box>
@@ -156,7 +188,7 @@ function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, 
           </SpaceBetween>
         )}
       </SpaceBetween>
-    </Box>
+    </div>
   );
 }
 

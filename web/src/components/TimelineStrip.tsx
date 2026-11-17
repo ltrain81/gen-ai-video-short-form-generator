@@ -32,10 +32,10 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
   const tracks = timeline.tracks.filter((t) => t.items.length || t.kind === 'video');
   return (
     <div style={{ userSelect: 'none' }}>
-      <div style={{ position: 'relative', height: 18, cursor: 'pointer' }}
+      <div style={{ position: 'relative', height: 18, cursor: 'pointer', marginLeft: 80, marginRight: 12 }}
         onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); onSeek(((e.clientX - r.left) / r.width) * duration); }}>
         {Array.from({ length: 11 }, (_, i) => (
-          <span key={i} style={{ position: 'absolute', left: `${i * 10}%`, fontSize: 10, color: '#8d99a8', transform: 'translateX(-50%)' }}>
+          <span key={i} style={{ position: 'absolute', left: `${i * 10}%`, fontSize: 10, color: '#8d99a8', transform: i === 0 ? 'none' : i === 10 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
             {fmtTime((duration * i) / 10)}
           </span>
         ))}
@@ -44,7 +44,7 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
         {tracks.map((tr) => (
           <div key={tr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <div style={{ width: 72, fontSize: 11, color: '#8d99a8', flexShrink: 0 }}>{tr.name}</div>
-            <div style={{ position: 'relative', flex: 1, height: tr.kind === 'caption' ? 18 : 30, background: 'rgba(127,127,127,0.12)', borderRadius: 6 }}
+            <div style={{ position: 'relative', flex: 1, marginRight: 12, height: tr.kind === 'caption' ? 18 : 30, background: 'rgba(127,127,127,0.12)', borderRadius: 6 }}
               onClick={(e) => { if (e.target === e.currentTarget) onSelect(undefined); }}>
               {tr.items.map((i) => (
                 <div key={i.id}
@@ -62,7 +62,7 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
             </div>
           </div>
         ))}
-        <div style={{ position: 'absolute', top: 0, bottom: 0, left: `calc(80px + (100% - 80px) * ${time / duration})`, width: 2, background: '#ef4444', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', top: 0, bottom: 0, left: `calc(80px + (100% - 92px) * ${Math.min(1, time / duration)})`, width: 2, background: '#ef4444', pointerEvents: 'none' }} />
       </div>
       {!timeline.tracks.some((t) => t.items.length) && <Box color="text-body-secondary" variant="small">—</Box>}
     </div>

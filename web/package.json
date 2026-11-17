@@ -12,12 +12,13 @@
   "dependencies": {
     "@cloudscape-design/chat-components": "^1.0.192",
     "@cloudscape-design/components": "^3.0.1417",
+    "@cloudscape-design/design-tokens": "^3",
     "@cloudscape-design/global-styles": "^1.0.72",
+    "@shorts/timeline": "workspace:*",
     "aws-amplify": "^6.22.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7",
-    "@shorts/timeline": "workspace:*"
+    "react-router-dom": "^7"
   },
   "devDependencies": {
     "@types/react": "^19",

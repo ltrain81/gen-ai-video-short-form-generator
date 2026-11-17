@@ -49,6 +49,7 @@ export default function App() {
   if (!user) return <LoginPage />;
 
   const studio = location.pathname === '/' || location.pathname.startsWith('/studio/');
+  const editor = location.pathname.startsWith('/studio/');
   return (
     <CsI18nProvider locale={lang} messages={[lang === 'ko' ? csMessagesKo : csMessagesEn]}>
       <Ctx.Provider value={{ me, notify }}>
@@ -71,6 +72,9 @@ export default function App() {
         <AppLayout
           headerSelector="#top-nav"
           toolsHide
+          navigationHide={editor}
+          disableContentPaddings={editor}
+          maxContentWidth={editor ? Number.MAX_VALUE : undefined}
           navigationOpen={!studio ? undefined : false}
           navigation={
             <SideNavigation

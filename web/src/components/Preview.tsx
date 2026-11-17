@@ -80,7 +80,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
     const el = stageRef.current?.parentElement;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const maxH = window.innerHeight * 0.62;
+      const maxH = Math.max(240, window.innerHeight - 380);
       setStageW(Math.min(el.clientWidth, (maxH * width) / height));
     });
     ro.observe(el);
@@ -196,13 +196,13 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
           {!mainItem && duration === 0 && <Box textAlign="center" color="inherit" padding="xxl"><span style={{ color: '#9ca3af' }}>—</span></Box>}
         </div>
       </div>
-      <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+      <div style={{ display: 'flex', justifyContent: 'center' }}><SpaceBetween direction="horizontal" size="xs" alignItems="center">
         <Button iconName={playing ? 'pause' : 'caret-right-filled'} variant="icon" ariaLabel="play" onClick={() => setPlaying(!playing)} disabled={!duration} />
-        <input type="range" min={0} max={Math.max(0.01, duration)} step={0.01} value={Math.min(time, duration)} style={{ width: 'min(520px, 50vw)' }}
+        <input type="range" min={0} max={Math.max(0.01, duration)} step={0.01} value={Math.min(time, duration)} style={{ width: `min(${Math.max(240, stageW)}px, 40vw)` }}
           onChange={(e) => { setPlaying(false); onTime(Number(e.target.value)); }} />
         <Box variant="small">{fmtTime(time)} / {fmtTime(duration)}</Box>
         <Toggle checked={safe} onChange={(e) => setSafe(e.detail.checked)}>safe zone</Toggle>
-      </SpaceBetween>
+      </SpaceBetween></div>
     </SpaceBetween>
   );
 }

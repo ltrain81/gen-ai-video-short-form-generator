@@ -15,3 +15,16 @@ body { margin: 0; }
 .awsui-one-theme .thumb, .awsui-one-theme .thumb-placeholder, .awsui-one-theme .player { border-radius: 4px; }
 .awsui-one-theme .seg-row { border-radius: 4px; }
 .awsui-one-theme .drop-hint { border-radius: 6px; }
+
+/* Studio editor: full-height split (canvas | chat) */
+.studio-split { display: grid; grid-template-columns: minmax(0, 1fr) clamp(360px, 32vw, 480px); height: calc(100vh - 56px); }
+.studio-canvas-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.studio-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; gap: 12px; }
+.studio-stage { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; justify-content: center; padding: 20px 24px;
+  background: radial-gradient(circle at 50% 40%, rgba(127,127,127,0.10), rgba(127,127,127,0.02) 70%); }
+.studio-timeline { padding: 4px 20px 12px; max-height: 32vh; overflow: auto; }
+.studio-chat-pane { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+@media (max-width: 900px) {
+  .studio-split { grid-template-columns: 1fr; height: auto; }
+  .studio-chat-pane { height: 70vh; }
+}

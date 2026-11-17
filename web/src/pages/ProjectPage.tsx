@@ -1,11 +1,14 @@
+import Badge from '@cloudscape-design/components/badge';
 import Box from '@cloudscape-design/components/box';
-import Container from '@cloudscape-design/components/container';
-import Grid from '@cloudscape-design/components/grid';
-import Header from '@cloudscape-design/components/header';
+import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
+import SpaceBetween from '@cloudscape-design/components/space-between';
 import Spinner from '@cloudscape-design/components/spinner';
+import StatusIndicator from '@cloudscape-design/components/status-indicator';
+import * as awsui from '@cloudscape-design/design-tokens';
 import type { Item, Timeline } from '@shorts/timeline';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../App';
 import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
@@ -25,6 +28,7 @@ export default function ProjectPage() {
   const location = useLocation();
   const { me, notify } = useApp();
   const { t } = useI18n();
+  const navigate = useNavigate();
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [media, setMedia] = useState<Record<string, AssetMedia>>({});
@@ -165,21 +169,46 @@ export default function ProjectPage() {
   if (!project || !timeline) return <Box textAlign="center" padding="xxl"><Spinner size="large" /></Box>;
 
   const selLabel = selected ? (selected.item.type === 'clip' ? `${titles[selected.item.assetId] ?? ''} ${fmtTime(selected.item.start)}` : selected.item.type) : undefined;
+  const hasEdit = timeline.tracks.some((tr) => tr.items.length > 0);
+  const suggestions = hasEdit ? [t('sugShorter'), t('sugCaptions'), t('sugMusic'), t('sugLandscape')] : [];
+  const divider = `1px solid ${awsui.colorBorderDividerDefault}`;
+
   return (
-    <Grid gridDefinition={[{ colspan: { default: 12, m: 7 } }, { colspan: { default: 12, m: 5 } }]}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <Container header={<Header variant="h2" description={`${timeline.settings.aspect} · v${project.currentVersion}`}>{project.title}</Header>}>
+    <div className="studio-split">
+      {/* Left: canvas (preview) + docked timeline */}
+      <section className="studio-canvas-pane">
+        <div className="studio-toolbar" style={{ borderBottom: divider }}>
+          <SpaceBetween direction="horizontal" size="s" alignItems="center">
+            <BreadcrumbGroup items={[{ text: t('navStudio'), href: '/' }, { text: project.title, href: '#' }]}
+              onFollow={(e) => { e.preventDefault(); if (e.detail.href === '/') navigate('/'); }} ariaLabel="breadcrumbs" />
+          </SpaceBetween>
+          <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+            <Badge>{timeline.settings.aspect}</Badge>
+            <Badge color="grey">v{project.currentVersion}</Badge>
+            {busy && <StatusIndicator type="loading">{t('agentWorking')}</StatusIndicator>}
+          </SpaceBetween>
+        </div>
+        <div className="studio-stage">
           <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id} />
-        </Container>
-        <Container header={<Header variant="h3">{t('timeline')}</Header>}>
-          <TimelineStrip timeline={timeline} time={time} onSeek={setTime} selectedId={selected?.item.id}
-            onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles} />
-        </Container>
-      </div>
-      <Container fitHeight>
+        </div>
+        <div className="studio-timeline" style={{ borderTop: divider, background: awsui.colorBackgroundContainerContent }}>
+          <ExpandableSection defaultExpanded variant="footer" headerText={t('timeline')}>
+            <TimelineStrip timeline={timeline} time={time} onSeek={setTime} selectedId={selected?.item.id}
+              onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)} titles={titles} />
+          </ExpandableSection>
+        </div>
+      </section>
+      {/* Right: chat sidebar */}
+      <aside className="studio-chat-pane" style={{ borderLeft: divider, background: awsui.colorBackgroundContainerContent }}>
         <ChatPanel entries={entries} busy={busy} onSend={send} onAnswer={answer} thumbs={thumbs} titles={titles}
-          selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)} />
-      </Container>
-    </Grid>
+          suggestions={suggestions} selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)}
+          header={
+            <div style={{ padding: '14px 20px', borderBottom: divider }}>
+              <Box variant="h3" padding="n">{project.title}</Box>
+              {project.synopsis && project.synopsis !== project.title && <Box variant="small" color="text-body-secondary">{project.synopsis}</Box>}
+            </div>
+          } />
+      </aside>
+    </div>
   );
 }
