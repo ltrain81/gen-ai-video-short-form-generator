@@ -153,7 +153,8 @@ def get_context(ctx: ToolContext, _args: dict) -> ToolResult:
                    "properties": {m: {"type": "number"} for m in ("visual", "transcription", "audio", "description",
                                                                    "image", "page")}},
        "assetIds": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these assets"},
-       "limit": {"type": "integer", "minimum": 1, "maximum": 30}})
+       "limit": {"type": "integer", "minimum": 1, "maximum": 60},
+       "perAsset": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Max moments per asset (default 6)"}})
 def search_archive(ctx: ToolContext, args: dict) -> ToolResult:
     image = None
     if args.get("imageAssetId"):
@@ -162,7 +163,7 @@ def search_archive(ctx: ToolContext, args: dict) -> ToolResult:
         image = storage.s3().get_object(Bucket=get_config().media_bucket, Key=key)["Body"].read()
     results = search.search(ctx.principal, text=args.get("query"), image=image, kinds=args.get("kinds"),
                             asset_ids=args.get("assetIds"), limit=int(args.get("limit", 10)),
-                            weights=args.get("weights"), per_asset=6)
+                            weights=args.get("weights"), per_asset=int(args.get("perAsset", 6)))
     return ToolResult([{"assetId": r["asset"]["assetId"], "title": r["asset"]["displayTitle"],
                         "kind": r["asset"].get("kind"), "durationSec": r["asset"].get("durationSec"),
                         "moments": [{k: s.get(k) for k in ("startSec", "endSec", "modality", "modalities", "page",
@@ -217,27 +218,40 @@ def content_profile(a: dict) -> dict:
 
 
 @tool("get_scenes", "Timestamped scene list of a video range (summary, on-screen text, shot type, highlight "
-      "score 1-5).", {"assetId": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"}},
+      "score 1-5). Long ranges are paged (nextStartSec).", {"assetId": {"type": "string"}, "startSec": {"type": "number"},
+                                                            "endSec": {"type": "number"}, "limit": {"type": "integer"}},
       ["assetId"])
 def get_scenes(ctx: ToolContext, args: dict) -> ToolResult:
     a = _asset(ctx, args["assetId"])
     scenes = [s for s in _analysis(a, "scenes") or [] if _in(s, args.get("startSec"), args.get("endSec"))]
-    return ToolResult(scenes[:150])
+    limit = int(args.get("limit", 200))
+    out = {"scenes": scenes[:limit], "total": len(scenes)}
+    if len(scenes) > limit:
+        out["nextStartSec"] = scenes[limit].get("start_sec") or scenes[limit].get("startSec")
+        out["note"] = "truncated; call again with startSec=nextStartSec"
+    return ToolResult(out)
 
 
 @tool("read_transcript", "Transcript sentences (with speaker labels) of a time range. Use for speech-led edits; "
-      "cut on sentence boundaries.", {"assetId": {"type": "string"}, "startSec": {"type": "number"},
-                                      "endSec": {"type": "number"}}, ["assetId"])
+      "cut on sentence boundaries. Long ranges are paged (nextStartSec).",
+      {"assetId": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"},
+       "limit": {"type": "integer"}}, ["assetId"])
 def read_transcript(ctx: ToolContext, args: dict) -> ToolResult:
     a = _asset(ctx, args["assetId"])
     sents = [s for s in _transcript(a)["sentences"] if _in(s, args.get("startSec"), args.get("endSec"), "s", "e")]
-    return ToolResult([{"s": s["s"], "e": s["e"], "spk": s.get("spk"), "text": s["text"]} for s in sents[:400]])
+    limit = int(args.get("limit", 600))
+    out = {"sentences": [{"s": s["s"], "e": s["e"], "spk": s.get("spk"), "text": s["text"]} for s in sents[:limit]],
+           "total": len(sents)}
+    if len(sents) > limit:
+        out["nextStartSec"] = sents[limit]["s"]
+        out["note"] = "truncated; call again with startSec=nextStartSec"
+    return ToolResult(out)
 
 
 @tool("look", "See frames of a video range (contact sheet, row-major) or a document page / image. Use it to judge "
       "composition, on-screen slides/boards, or whether a moment is visually strong.",
       {"assetId": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"},
-       "frames": {"type": "integer", "minimum": 1, "maximum": 16}, "page": {"type": "integer"}}, ["assetId"])
+       "frames": {"type": "integer", "minimum": 1, "maximum": 36}, "page": {"type": "integer"}}, ["assetId"])
 def look(ctx: ToolContext, args: dict) -> ToolResult:
     a = _asset(ctx, args["assetId"])
     m = _manifest(a)
@@ -248,9 +262,10 @@ def look(ctx: ToolContext, args: dict) -> ToolResult:
         return ToolResult({"assetId": a["assetId"], "page": img["index"]}, [data])
     start = float(args.get("startSec", 0))
     end = float(args.get("endSec", min(start + 30, a.get("durationSec") or start + 30)))
-    times = frames.spread(start, end, int(args.get("frames", 8)))
-    sheet = frames.contact_sheet(_proxy_url(a), times, cols=4)
-    return ToolResult({"assetId": a["assetId"], "frameTimes": times, "layout": "4 columns, row-major"}, [sheet])
+    times = frames.spread(start, end, min(36, int(args.get("frames", 8))))
+    cols = 4 if len(times) <= 16 else 6
+    sheet = frames.contact_sheet(_proxy_url(a), times, cols=cols)
+    return ToolResult({"assetId": a["assetId"], "frameTimes": times, "layout": f"{cols} columns, row-major"}, [sheet])
 
 
 @tool("ask_video", "Ask the video-understanding model (Pegasus) a question about a video or a time range of it. "
@@ -317,10 +332,11 @@ def _beats(a: dict) -> list[float]:
       "point and a layout (crop = follow the subject, split = speaker + slide/board stacked, fit_blur = whole frame on "
       "blurred background, letterbox). Returns a reframe value ready for edit_timeline `update`.",
       {"assetId": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"},
-       "aspect": {"type": "string", "enum": ["9:16", "1:1", "4:5", "16:9"]},
+       "aspect": {"type": "string", "description": "Target frame 'W:H' — the canvas, or the box the clip will fill "
+                  "(e.g. '1:1' for a square box inside a 9:16 canvas). Default: the canvas aspect."},
        "intent": {"type": "string", "description": "What must stay visible, e.g. 'follow the ball', "
                                                     "'keep lecturer and the board'"}},
-      ["assetId", "startSec", "endSec", "aspect"])
+      ["assetId", "startSec", "endSec"])
 def analyze_framing(ctx: ToolContext, args: dict) -> ToolResult:
     a = _asset(ctx, args["assetId"])
     start, end = float(args["startSec"]), float(args["endSec"])
@@ -329,7 +345,8 @@ def analyze_framing(ctx: ToolContext, args: dict) -> ToolResult:
     segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1) if bounds[i + 1] - bounds[i] > 0.3][:12]
     times = [round((s + e) / 2, 3) for s, e in segs] or [round((start + end) / 2, 3)]
     imgs = frames.frames(_proxy_url(a), times, 480)
-    plan = models.framing_plan(imgs, times, args["aspect"], args.get("intent", ""), a.get("width"), a.get("height"))
+    aspect = args.get("aspect") or projects.load_timeline(projects.require_project(ctx.principal, ctx.project_id, "view")[0])["settings"].get("aspect", "9:16")
+    plan = models.framing_plan(imgs, times, aspect, args.get("intent", ""), a.get("width"), a.get("height"))
     path, layouts = [], []
     for (s, e), f in zip(segs or [(start, end)], plan):
         x, y, scale = float(f.get("x", 0.5)), float(f.get("y", 0.5)), float(f.get("zoom", 1.0))
@@ -342,26 +359,135 @@ def analyze_framing(ctx: ToolContext, args: dict) -> ToolResult:
 
 
 # ================================================================== act
-@tool("get_timeline", "Current timeline (compact): tracks, items with ids, timings, provenance, user pins.", {})
-def get_timeline(ctx: ToolContext, _args: dict) -> ToolResult:
+@tool("get_timeline", "Current timeline: tracks, items with ids, timings, layout/style essentials, provenance, user pins. "
+      "full=true returns every property (raw JSON) — use it before relative edits ('a bit bigger').",
+      {"full": {"type": "boolean"}})
+def get_timeline(ctx: ToolContext, args: dict) -> ToolResult:
     project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
-    return ToolResult({"version": project["currentVersion"], **timeline_ops.summarize(projects.load_timeline(project))})
+    return ToolResult({"version": project["currentVersion"],
+                       **timeline_ops.summarize(projects.load_timeline(project), full=bool(args.get("full")))})
+
+
+@tool("get_item", "Every property of one timeline item (and its track), e.g. to read a style/transform before changing it.",
+      {"itemId": {"type": "string"}}, ["itemId"])
+def get_item(ctx: ToolContext, args: dict) -> ToolResult:
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    tl = projects.load_timeline(project)
+    tr, it, idx = timeline_ops.find_item(tl, args["itemId"])
+    return ToolResult({"track": {k: v for k, v in tr.items() if k != "items"}, "index": idx, "item": it,
+                       "pinned": [p for p in tl.get("pins", []) if p.startswith(f"items/{it['id']}")]})
+
+
+@tool("preview_frames",
+      "Render real output frames of the CURRENT timeline at the given times (same compositor as the final video: "
+      "layouts, overlays, effects, text, captions, shapes). Use it to check your own edit before telling the user it's "
+      "done, and to compare options.",
+      {"times": {"type": "array", "items": {"type": "number"}, "maxItems": 8,
+                 "description": "Timeline seconds; default: 4 evenly spaced"},
+       "width": {"type": "integer", "minimum": 160, "maximum": 1080}})
+def preview_frames(ctx: ToolContext, args: dict) -> ToolResult:
+    import os
+    from . import render, renders
+    if not os.environ.get("FFMPEG_BIN"):
+        os.environ["FFMPEG_BIN"] = frames.ffmpeg_bin()
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    tl = projects.load_timeline(project)
+    timeline_ops.relayout(tl)
+    dur = timeline_ops.duration(tl)
+    if dur <= 0:
+        raise ValueError("The timeline is empty")
+    times = [min(max(0.0, float(t)), max(0.0, dur - 0.05)) for t in (args.get("times") or [])][:8]
+    if not times:
+        times = [round(dur * (k + 0.5) / 4, 2) for k in range(4)]
+    width = int(args.get("width", 360 if len(times) > 2 else 540))
+    imgs = render.render_stills(tl, renders.media_map(tl, "preview"), times, width)
+    return ToolResult({"frames": [{"t": t} for t in times], "durationSec": round(dur, 2),
+                       "note": "one image per time, in order"}, imgs)
+
+
+@tool("render_video", "Start rendering the current version to a video file (preview = fast 540p, final = full quality). "
+      "The user sees progress in Export → Renders. Returns the render id.",
+      {"quality": {"type": "string", "enum": ["preview", "final"]}})
+def render_video(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import renders
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "edit")
+    r = renders.request(project, args.get("quality", "preview"), ctx.principal.sub)
+    _publish(ctx, {"type": "render.requested", "renderId": r["renderId"], "quality": r["quality"]})
+    return ToolResult({"renderId": r["renderId"], "status": r["status"], "quality": r["quality"]})
+
+
+@tool("list_renders", "Renders of this project with status/progress (and download links when done).", {})
+def list_renders(ctx: ToolContext, _args: dict) -> ToolResult:
+    from . import renders
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    out = renders.list_for(project)[:10]
+    for r in out:
+        r.pop("urls", None)  # links are shown to the user in the UI
+    return ToolResult(out)
+
+
+@tool("list_versions", "Saved versions of the timeline (who changed what).", {})
+def list_versions(ctx: ToolContext, _args: dict) -> ToolResult:
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    return ToolResult(projects.versions(ctx.project_id)[:30])
+
+
+@tool("restore_version", "Restore an earlier timeline version (creates a new version; nothing is lost).",
+      {"version": {"type": "integer"}}, ["version"])
+def restore_version(ctx: ToolContext, args: dict) -> ToolResult:
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "edit")
+    if not projects.acquire_lock(project, ctx.holder):
+        raise ValueError("The user is editing the timeline right now")
+    project = ddb.get(f"PROJ#{ctx.project_id}", "META", consistent=True)
+    tl = projects.load_timeline(project, int(args["version"]))
+    version = projects.save(ctx.principal, project, tl, project["currentVersion"], "agent",
+                            f"restore v{args['version']}", holder=ctx.holder)["currentVersion"]
+    _publish(ctx, {"type": "timeline.updated", "version": version, "message": f"restore v{args['version']}"})
+    return ToolResult({"version": version})
 
 
 OPS_DOC = (
-    "Ops (applied in order, each atomically; rejected ops are reported, others still apply):\n"
-    "- add_clip {assetId, srcIn, srcOut, track?='v1', index?, start? (non-main tracks), duration? (images), page? "
-    "(document page), reason, analysisRef?}\n"
-    "- remove {itemId} | trim {itemId, srcIn?, srcOut?, duration?} | split {itemId, at (timeline sec)} | "
-    "move {itemId, index? (main track), track?, start?}\n"
-    "- update {itemId, set:{transform|reframe|kenBurns|volume|fadeIn|fadeOut|effects|keyframes|opacity|"
-    "transitionIn|transitionOut|speed|text|style|position|animation|...}}\n"
-    "- add_text {text, start, duration, role(title|lowerThird|callout|cta|step), position?, style?, animation?}\n"
-    "- captions {preset(clean|bold|karaoke|pop|boxed|minimal)} — word-timed captions from transcripts\n"
-    "- settings {set:{aspect|fps|background|loudness|safeZone|recipe}} | meta {set:{title|description|hashtags|"
-    "thumbnailAt}} | marker {t, label, kind} | clear_track {track}\n"
-    "Track v1 is the magnetic main track (no gaps). o1 = B-roll overlay, t1 text, c1 captions, a1 music, a2 voiceover. "
-    "Pinned paths (user edits) cannot be changed — work around them.")
+    "Ops (applied in order, each atomically; rejected ops are reported, others still apply). Everything below is "
+    "rendered by the final renderer and shown in the preview — compose freely.\n"
+    "CLIPS: add_clip {assetId, srcIn, srcOut, track?, index? (main track), start? (other tracks), duration? (images), "
+    "page? (document page), speed?, reason} · remove {itemId} · trim {itemId, srcIn?, srcOut?, duration?} · "
+    "split {itemId, at} · move {itemId, index? | track? + start?}\n"
+    "UPDATE: update {itemId, set:{...}} — any of: srcIn, srcOut, assetId (swap media), speed (0.1–16), mode "
+    "(normal|reverse|freeze), volume (0–4), fadeIn, fadeOut, opacity (0–1), start/duration (free tracks), "
+    "transitionIn {type, duration ≤3}, transform, reframe, kenBurns {from:{x,y,scale},to:{...}}, effects, text, style, "
+    "position, animation, rotation (text, degrees), shape fields.\n"
+    "  reframe (main/overlay clips) = {layout, path?, box?, fit?, background?}: layout crop (cover the canvas, follow "
+    "path [{t (source sec), x, y, scale≥1}]) | box (clip fills ANY rectangle: box {x,y,w,h} 0..1 of the canvas, top-left "
+    "origin; fit cover|contain; background black|blur|#rrggbb — e.g. a 1:1 square centred in 9:16 = box {x:0, y:0.2188, "
+    "w:1, h:0.5625}; top two-thirds = {x:0,y:0,w:1,h:0.667}) | split (subject top + whole frame bottom; splitRatio) | "
+    "fit_blur | letterbox (pad uses settings.background).\n"
+    "  transform (overlay layers = PIP; main = flip/rotate) = {x, y (centre 0..1), scale (width fraction; <1 = PIP), "
+    "rotation (deg), flipH, flipV, crop {l,t,r,b fractions}}.\n"
+    "  effects = [{type: color, brightness(-1..1), contrast(1), saturation(1), gamma(1), temperature(-1 warm..1 cool), "
+    "tint} | blur {radius px} | vignette {amount 0..1} | sharpen {amount} | denoise {amount} | grayscale | sepia | invert "
+    "| pixelate {size} | mirror | chromaKey {color, similarity, smoothness} (overlays: green screen) | eq {low, mid, high "
+    "-1..1} (audio) | audioDenoise {amount} | pitch {factor}].\n"
+    "  transitionIn.type: fade|dissolve|dipToBlack|dipToWhite|wipeLeft|wipeUp|slideLeft|zoom|blur or ANY ffmpeg xfade "
+    "name (circleopen, radial, pixelize, slideright, smoothup, diagtl, squeezeh, coverleft, revealup, …).\n"
+    "TEXT: add_text {text, start, duration, track?, role?, position {x, y, anchor center|top|bottom, maxWidth}, "
+    "style {font, size (fraction of height), weight, color, background (box colour, rgba ok), padding, stroke {color, "
+    "width}, shadow {color, x, y, blur}, align left|center|right, italic, uppercase, letterSpacing}, animation {in: none|"
+    "fade|pop|slideUp|slideDown|typewriter|wordByWord, out: none|fade}, rotation, opacity}\n"
+    "SHAPES: add_shape {shape rect|roundRect|ellipse|progressBar, box {x,y,w,h}, fill (rgba ok), stroke?, radius? "
+    "(roundRect 0..1), opacity?, start, duration, track?} — boxes behind titles, bars, frames, dividers, progress bars.\n"
+    "CAPTIONS: captions {preset clean|bold|karaoke|pop|boxed|minimal, style?, y?} (word-timed from the main track's "
+    "speech) · add_caption {text | words [{s,e,w}], start, duration, track?, preset?, style?, position {x, y}} (any "
+    "caption, e.g. for voiceover/TTS) · update {itemId, set:{words|style|position|preset}}.\n"
+    "TRACKS: add_track {kind video|overlay|text|caption|audio, name?, index?, audioRole? dialogue|music|voiceover|sfx, "
+    "volume?} · update_track {trackId, set:{name, volume, muted, hidden, locked, audioRole}} · move_track {trackId, "
+    "index} (stacking: index 0 = bottom) · remove_track {trackId} · clear_track {track}. Overlay clips are silent "
+    "unless volume > 0.\n"
+    "PROJECT: settings {set:{aspect ('9:16', '21:9', any 'W:H'), width+height (custom px, 240–4096), fps, "
+    "background, loudness (LUFS), safeZone, ducking {enabled, threshold, ratio, attack, release}}} · meta {set:{title, "
+    "description, hashtags, thumbnailAt}} · marker {t, label, kind} · brand {kit}\n"
+    "Track v1 is the magnetic main track (sequential, no gaps). Default tracks: o1 B-roll/PIP, t1 text, c1 captions, "
+    "a1 music, a2 voiceover — add more as needed. Pinned paths (user edits) cannot be changed — work around them. "
+    "After a visual change, verify with preview_frames.")
 
 
 @tool("edit_timeline", "Apply edit operations to the project timeline and save a new version. " + OPS_DOC,

@@ -61,7 +61,69 @@ function activeAt(items: Item[], t: number): Item | undefined {
 }
 
 function srcTime(c: ClipItem, t: number): number {
-  return c.srcIn + (t - c.start) * (c.speed ?? 1);
+  const rel = (t - c.start) * (c.speed ?? 1);
+  if (c.mode === 'freeze') return c.srcIn;
+  if (c.mode === 'reverse') return Math.max(c.srcIn, c.srcOut - rel);
+  return c.srcIn + rel;
+}
+
+type Fx = { type: string; [k: string]: unknown };
+const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+/** Clip effects → CSS filter (approximation of the renderer's ffmpeg filters). */
+export function cssFilter(effects?: unknown): string | undefined {
+  const out: string[] = [];
+  for (const e of (Array.isArray(effects) ? effects : []) as Fx[]) {
+    if (e.type === 'color') {
+      out.push(`brightness(${1 + num(e.brightness, 0)})`, `contrast(${num(e.contrast, 1)})`, `saturate(${num(e.saturation, 1)})`);
+      if (num(e.temperature, 0) < 0) out.push(`sepia(${Math.min(0.5, -num(e.temperature, 0) * 0.4)})`);
+      if (num(e.temperature, 0) > 0) out.push(`hue-rotate(${num(e.temperature, 0) * -12}deg)`);
+    } else if (e.type === 'blur') out.push(`blur(${num(e.radius, 8) / 4}px)`);
+    else if (e.type === 'grayscale') out.push('grayscale(1)');
+    else if (e.type === 'sepia') out.push('sepia(1)');
+    else if (e.type === 'invert') out.push('invert(1)');
+    else if (e.type === 'sharpen') out.push(`contrast(${1 + num(e.amount, 0.5) * 0.1})`);
+  }
+  return out.length ? out.join(' ') : undefined;
+}
+const hasFx = (effects: unknown, type: string) => Array.isArray(effects) && (effects as Fx[]).some((e) => e?.type === type);
+/** Flip/rotation (+ crop as clip-path) of a layer. */
+function tfCss(tf: Partial<NonNullable<ClipItem['transform']>> & { flipV?: boolean }, base = ''): CSSProperties {
+  const parts = [base];
+  if (tf.rotation) parts.push(`rotate(${tf.rotation}deg)`);
+  if (tf.flipH) parts.push('scaleX(-1)');
+  if (tf.flipV) parts.push('scaleY(-1)');
+  const c = tf.crop;
+  return {
+    transform: parts.filter(Boolean).join(' ') || undefined,
+    clipPath: c ? `inset(${(c.t ?? 0) * 100}% ${(c.r ?? 0) * 100}% ${(c.b ?? 0) * 100}% ${(c.l ?? 0) * 100}%)` : undefined,
+  };
+}
+
+function focusPos(c: ClipItem, t: number): CSSProperties {
+  const f = focusAt(c, srcTime(c, t));
+  return { objectPosition: `${(f.x * 100).toFixed(1)}% ${(f.y * 100).toFixed(1)}%` };
+}
+
+/** One video layer that keeps itself in sync with the timeline clock (any number of overlay videos). */
+function LayerVideo({ item, time, playing, url, style, muted = true }: { item: ClipItem; time: number; playing: boolean; url?: string; style: CSSProperties; muted?: boolean }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !url) return;
+    const want = srcTime(item, time);
+    if (el.dataset.src !== url) {
+      el.dataset.src = url; el.src = url;
+      el.addEventListener('loadedmetadata', () => { el.currentTime = Number(el.dataset.want ?? want); }, { once: true });
+    }
+    el.dataset.want = String(want);
+    const still = item.mode === 'freeze' || item.mode === 'reverse';
+    if (Math.abs(el.currentTime - want) > (playing && !still ? 0.35 : 0.04)) el.currentTime = want;
+    el.playbackRate = item.speed ?? 1;
+    el.volume = Math.min(1, Math.max(0, item.volume ?? 0));
+    if (playing && !still && el.paused) el.play().catch(() => undefined);
+    if ((!playing || still) && !el.paused) el.pause();
+  }, [item, time, playing, url]);
+  return <video ref={ref} muted={muted} playsInline preload="auto" style={style} />;
 }
 
 function focusAt(c: ClipItem, st: number): { x: number; y: number; scale: number; layout: string } {
@@ -73,16 +135,41 @@ function focusAt(c: ClipItem, st: number): { x: number; y: number; scale: number
   return { x: p.x, y: p.y, scale: p.scale ?? 1, layout: r?.layout ?? 'crop' };
 }
 
-function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain'): CSSProperties {
+type ShapeLike = { id: string; type: 'shape'; shape: string; start: number; duration: number; fill?: string; opacity?: number;
+  radius?: number; box: { x: number; y: number; w: number; h: number }; stroke?: { color: string; width: number } };
+
+/** Text animation state at local time u (seconds since the item start), mirroring the renderer's ASS output. */
+function textAnim(x: TextItem, u: number, H: number): { opacity: number; scale: number; dy: number; reveal?: number } {
+  const a = asObj<NonNullable<TextItem['animation']>>(x.animation);
+  const inn = a.in ?? 'none', out = a.out ?? 'none';
+  let opacity = 1, scale = 1, dy = 0;
+  let reveal: number | undefined;
+  if (['fade', 'pop', 'slideUp', 'slideDown'].includes(inn)) opacity = Math.min(1, u / 0.18);
+  if (['fade', 'pop'].includes(out)) opacity = Math.min(opacity, Math.max(0, (x.duration - u) / 0.18));
+  if (inn === 'pop') scale = 0.8 + 0.2 * Math.min(1, u / 0.16);
+  if (inn === 'slideUp' || inn === 'slideDown') dy = (inn === 'slideUp' ? 1 : -1) * 0.04 * H * (1 - Math.min(1, u / 0.32));
+  if (inn === 'typewriter' || inn === 'wordByWord') reveal = Math.min(1, u / Math.max(0.01, Math.min(1.5, x.duration * 0.6)));
+  return { opacity, scale, dy, reveal };
+}
+
+type BoxReframe = ReframeValue & { box?: { x?: number; y?: number; w?: number; h?: number }; fit?: string; background?: string };
+
+function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain', t = c.start, main = false): CSSProperties {
   const f = focusAt(c, st);
-  const rel = 0;
-  const opacity = sampleKeyframes(c.keyframes?.opacity, rel, c.opacity ?? 1);
-  const contain = f.layout === 'fit_blur' || f.layout === 'letterbox' || f.layout === 'split' || fit === 'contain';
+  const opacity = sampleKeyframes(c.keyframes?.opacity, t - c.start, c.opacity ?? 1);
+  const r = (c.reframe ?? {}) as BoxReframe;
+  const contain = f.layout === 'fit_blur' || f.layout === 'letterbox' || f.layout === 'split' || fit === 'contain'
+    || (f.layout === 'box' && r.fit === 'contain');
+  const tf = main ? tfCss(asObj(c.transform)) : {};
+  const geom: CSSProperties = f.layout === 'box'
+    ? { left: `${(r.box?.x ?? 0) * 100}%`, top: `${(r.box?.y ?? 0) * 100}%`, width: `${(r.box?.w ?? 1) * 100}%`, height: `${(r.box?.h ?? 1) * 100}%` }
+    : { inset: 0, width: '100%', height: '100%' };
   return {
-    position: 'absolute', inset: 0, width: '100%', height: '100%',
+    position: 'absolute', ...geom,
     objectFit: contain ? 'contain' : 'cover',
     objectPosition: `${(f.x * 100).toFixed(1)}% ${(f.y * 100).toFixed(1)}%`,
-    transform: `scale(${f.scale})`, transformOrigin: `${f.x * 100}% ${f.y * 100}%`, opacity,
+    transform: [`scale(${f.scale})`, tf.transform].filter(Boolean).join(' '), transformOrigin: `${f.x * 100}% ${f.y * 100}%`, opacity,
+    filter: cssFilter(c.effects),
   };
 }
 
@@ -100,7 +187,6 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const dragRef = useRef<CanvasDrag | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLVideoElement>(null);
-  const overlayRef = useRef<HTMLVideoElement>(null);
   const musicRef = useRef<HTMLAudioElement>(null);
   const auxRef = useRef<HTMLVideoElement>(null); // second layer of the main clip: blurred fill / split bottom
   const [playingLocal, setPlayingLocal] = useState(false);
@@ -117,13 +203,25 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const { width, height } = timeline.settings;
   const tracks = timeline.tracks;
   const main = tracks.find((t) => t.kind === 'video');
-  const overlay = tracks.find((t) => t.kind === 'overlay');
-  const texts = tracks.filter((t) => t.kind === 'text' && !t.hidden).flatMap((t) => t.items) as TextItem[];
+  // Every non-main video/overlay track is a layer (bottom → top in track order), like the renderer.
+  const layers = tracks.map((tr, idx) => ({ tr, idx })).filter(({ tr }) => (tr.kind === 'overlay' || (tr.kind === 'video' && tr !== main)) && !tr.hidden);
+  const activeLayers = layers.flatMap(({ tr, idx }) => tr.items.filter((i) => i.type === 'clip' && time >= i.start && time < i.start + i.duration)
+    .map((i) => ({ tr, idx, item: i as ClipItem })));
+  const isPip = (o: ClipItem) => {
+    const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform) as Record<string, unknown>;
+    return Number(tf.scale ?? 1) < 0.999 || (o.mediaKind === 'image' && !!o.transform) || !!(tf.rotation || tf.crop || tf.flipH || tf.flipV);
+  };
+  const zOf = new Map<string, number>(tracks.flatMap((tr, idx) => tr.items.map((i) => [i.id, 2 + idx * 2] as [string, number])));
+  const texts = tracks.filter((t) => t.kind === 'text' && !t.hidden).flatMap((t) => t.items).filter((i) => i.type === 'text') as TextItem[];
+  const shapes = tracks.filter((t) => t.kind === 'text' && !t.hidden).flatMap((t) => t.items).filter((i) => (i as { type: string }).type === 'shape') as unknown as ShapeLike[];
   const captions = tracks.filter((t) => t.kind === 'caption' && !t.hidden).flatMap((t) => t.items) as CaptionItem[];
   const music = tracks.find((t) => t.kind === 'audio' && t.audioRole === 'music');
 
   const mainItem = main && activeAt(main.items, time) as ClipItem | undefined;
-  const overlayItem = overlay && activeAt(overlay.items, time) as ClipItem | undefined;
+  const overlayItem = [...activeLayers].reverse().find((l) => !isPip(l.item))?.item; // topmost full-frame layer
+  const audioItems = tracks.map((tr, idx) => ({ tr, idx })).filter(({ tr }) => tr.kind === 'audio' && !tr.muted && tr !== music)
+    .flatMap(({ tr }) => tr.items.filter((i) => i.type === 'clip' && time >= i.start && time < i.start + i.duration)
+      .map((i) => ({ ...(i as ClipItem), volume: (tr.volume ?? 1) * ((i as ClipItem).volume ?? 1) })));
   const musicItem = music && activeAt(music.items, time) as ClipItem | undefined;
 
   // Fit the stage into the available box (max 70vh tall).
@@ -153,24 +251,25 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     }
     el.dataset.want = String(want);
     if (el.readyState === 0 && el.networkState !== el.NETWORK_LOADING) el.load();
-    if (Math.abs(el.currentTime - want) > (playing ? 0.35 : 0.04)) el.currentTime = want;
+    const still = c.mode === 'freeze' || c.mode === 'reverse'; // reverse is scrubbed frame by frame
+    if (Math.abs(el.currentTime - want) > (playing && !still ? 0.35 : 0.04)) el.currentTime = want;
     el.playbackRate = c.speed ?? 1;
     el.volume = Math.min(1, Math.max(0, c.volume ?? 1));
-    if (playing && el.paused) el.play().catch(() => undefined);
-    if (!playing && !el.paused) el.pause();
+    if (playing && !still && el.paused) el.play().catch(() => undefined);
+    if ((!playing || still) && !el.paused) el.pause();
   }, [playing]);
 
   useEffect(() => {
     syncEl(mainRef.current, mainItem?.mediaKind === 'video' ? mainItem : undefined, time, mainItem && media[mainItem.assetId]?.proxyUrl);
     const lay = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
-    syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' ? mainItem : undefined, time,
+    const rb = (mainItem?.reframe ?? {}) as { background?: string };
+    syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' || (lay === 'box' && rb.background === 'blur') ? mainItem : undefined, time,
       mainItem && (media[mainItem.assetId]?.scrubUrl ?? media[mainItem.assetId]?.proxyUrl));
     if (auxRef.current) auxRef.current.muted = true;
-    syncEl(overlayRef.current, overlayItem?.mediaKind === 'video' ? overlayItem : undefined, time, overlayItem && media[overlayItem.assetId]?.proxyUrl);
     const mu = musicItem && (media[musicItem.assetId]?.audioUrl ?? media[musicItem.assetId]?.proxyUrl);
     syncEl(musicRef.current, musicItem, time, mu);
     if (musicRef.current) musicRef.current.volume = Math.min(1, (music?.volume ?? 0.6) * (musicItem?.volume ?? 1));
-  }, [time, mainItem, overlayItem, musicItem, media, syncEl, music?.volume]);
+  }, [time, mainItem, musicItem, media, syncEl, music?.volume]);
 
   // Playback clock (wall-clock based; media elements follow).
   useEffect(() => {
@@ -326,20 +425,25 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const pipBox = (o: ClipItem): CSSProperties | null => {
     const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform);
     const sc = Number(tf.scale ?? 1);
-    if (sc >= 0.999) return null;
-    return { position: 'absolute', width: `${sc * 100}%`, height: 'auto', aspectRatio: `${media[o.assetId]?.width ?? 16} / ${media[o.assetId]?.height ?? 9}`,
-      left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`, transform: 'translate(-50%, -50%)', objectFit: 'cover', opacity: o.opacity ?? 1,
-      cursor: canEdit ? 'move' : 'pointer' };
+    if (!isPip(o)) return null;
+    const m = media[o.assetId];
+    // The renderer scales a video layer rendered at canvas size; images keep their own aspect.
+    const ar = o.mediaKind === 'image' ? `${m?.width ?? 1} / ${m?.height ?? 1}` : `${width} / ${height}`;
+    return { position: 'absolute', width: `${sc * 100}%`, height: 'auto', aspectRatio: ar,
+      left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`, objectFit: 'cover', opacity: o.opacity ?? 1,
+      cursor: canEdit ? 'move' : 'pointer', filter: cssFilter(o.effects), ...tfCss(tf, 'translate(-50%, -50%)') };
   };
   const mainLayout = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
   // Mirrors the server renderer's layouts: fit_blur = blurred cover fill + contained frame;
   // split = subject crop on the top half + whole frame (slide/board) on the bottom half; letterbox = contain on black.
-  const auxStyle: CSSProperties = mainLayout === 'fit_blur'
+  const mainBox = (mainItem?.reframe ?? {}) as BoxReframe;
+  const boxBlur = mainLayout === 'box' && mainBox.background === 'blur';
+  const auxStyle: CSSProperties = mainLayout === 'fit_blur' || boxBlur
     ? { position: 'absolute', inset: '-6%', width: '112%', height: '112%', objectFit: 'cover', filter: 'blur(24px) brightness(0.88)' }
     : mainLayout === 'split' ? { position: 'absolute', left: 0, right: 0, bottom: 0, width: '100%', height: '50%', objectFit: 'contain', background: '#000' }
       : { display: 'none' };
   const mainStyle = (c: ClipItem): CSSProperties => {
-    const base = mediaStyle(c, srcTime(c, time), 'cover');
+    const base = mediaStyle(c, srcTime(c, time), 'cover', time, true);
     if (mainLayout === 'split') {
       const f = focusAt(c, srcTime(c, time));
       return { ...base, objectFit: 'cover', height: '50%', bottom: 'auto', objectPosition: `${(f.x * 100).toFixed(1)}% ${(f.y * 100).toFixed(1)}%` };
@@ -374,42 +478,76 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
           <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
             style={mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' }} />
           {mainItem?.mediaKind === 'image' && imageEl(mainItem)}
-          <video ref={overlayRef} muted playsInline preload="auto"
-            onPointerDown={(e) => overlayItem && pipBox(overlayItem) && beginDrag(e, overlayItem, 'pip', 'move')}
-            style={overlayItem?.mediaKind === 'video' ? (pipBox(overlayItem) ?? mediaStyle(overlayItem, srcTime(overlayItem, time), 'cover')) : { display: 'none' }} />
-          {overlayItem?.mediaKind === 'video' && pipBox(overlayItem) && (
-            <div style={{ ...pipBox(overlayItem)!, pointerEvents: 'none', outline: selectedId === overlayItem.id ? '2px solid #22d3ee' : undefined }}>
-              <div style={{ pointerEvents: 'auto' }}>{handles(overlayItem, 'pip')}</div>
-            </div>
-          )}
-          {overlay?.items.filter((o) => o.type === 'clip' && time >= o.start && time < o.start + o.duration).map((o0) => {
-            const o = o0 as ClipItem;
-            const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform);
-            const sc = Number(tf.scale ?? 1);
-            if (o.mediaKind !== 'image') return null;
-            if (sc >= 0.999 && !o.transform) return <div key={o.id} style={{ position: 'absolute', inset: 0 }}>{imageEl(o)}</div>;
+          {activeLayers.map(({ idx, item: o }) => {
+            const z = 2 + idx * 2;
             const m = media[o.assetId];
+            const box = pipBox(o);
+            if (o.mediaKind === 'video') {
+              const url = m?.proxyUrl;
+              if (!box) {
+                return <LayerVideo key={o.id} item={o} time={time} playing={playing} url={url} muted={!(o.volume && o.volume > 0)}
+                  style={{ ...mediaStyle(o, srcTime(o, time), 'cover', time), zIndex: z, opacity: o.opacity ?? 1, pointerEvents: 'none' }} />;
+              }
+              return (
+                <div key={o.id} onPointerDown={(e) => beginDrag(e, o, 'pip', 'move')}
+                  style={{ ...box, zIndex: z, outline: selectedId === o.id ? '2px solid #22d3ee' : undefined }}>
+                  <LayerVideo item={o} time={time} playing={playing} url={url} muted={!(o.volume && o.volume > 0)}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none', ...focusPos(o, time) }} />
+                  {handles(o, 'pip')}
+                </div>
+              );
+            }
+            if (!box) return <div key={o.id} style={{ position: 'absolute', inset: 0, zIndex: z, opacity: o.opacity ?? 1, filter: cssFilter(o.effects), pointerEvents: 'none' }}>{imageEl(o)}</div>;
             return (
               <div key={o.id} onPointerDown={(e) => beginDrag(e, o, 'pip', 'move')}
-                style={{ position: 'absolute', width: `${sc * 100}%`, left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`,
-                  transform: 'translate(-50%, -50%)', cursor: canEdit ? 'move' : 'pointer', outline: selectedId === o.id ? '2px solid #22d3ee' : undefined }}>
-                <img src={m?.imageUrl ?? m?.thumbnailUrl} alt="" draggable={false} style={{ width: '100%', display: 'block', opacity: o.opacity ?? 1, objectFit: 'contain', pointerEvents: 'none' }} />
+                style={{ ...box, zIndex: z, outline: selectedId === o.id ? '2px solid #22d3ee' : undefined }}>
+                <img src={m?.imageUrl ?? m?.thumbnailUrl} alt="" draggable={false} style={{ width: '100%', display: 'block', objectFit: 'contain', pointerEvents: 'none',
+                  ...(hasFx(o.effects, 'chromaKey') ? { mixBlendMode: 'screen' } : {}) }} />
                 {handles(o, 'pip')}
               </div>
             );
           })}
+          {playing && audioItems.map((a) => (
+            <LayerVideo key={a.id} item={a} time={time} playing={playing} muted={false}
+              url={media[a.assetId]?.audioUrl ?? media[a.assetId]?.proxyUrl} style={{ display: 'none' }} />
+          ))}
           <audio ref={musicRef} preload="auto" />
+          {shapes.filter((g) => time >= g.start && time < g.start + g.duration).map((g) => {
+            const b = g.box ?? { x: 0, y: 0, w: 0.1, h: 0.1 };
+            const pxW = b.w * stageW, pxH = b.h * stageH;
+            const prog = g.shape === 'progressBar' ? Math.min(1, (time - g.start) / Math.max(0.01, g.duration)) : 1;
+            return (
+              <div key={g.id} onClick={(e) => { e.stopPropagation(); onSelect?.(g as unknown as Item, undefined); }}
+                style={{ position: 'absolute', left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * prog * 100}%`, height: `${b.h * 100}%`,
+                  background: g.fill ?? '#000', opacity: g.opacity ?? 1, zIndex: zOf.get(g.id), boxSizing: 'border-box',
+                  border: g.stroke?.width ? `${g.stroke.width * height * scale}px solid ${g.stroke.color}` : undefined,
+                  borderRadius: g.shape === 'ellipse' ? '50%' : g.shape === 'roundRect' ? Math.min(pxW, pxH) / 2 * (g.radius ?? 0.25) : 0,
+                  outline: selectedId === g.id ? '2px dashed #22d3ee' : undefined }} />
+            );
+          })}
           {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x0) => {
             const x = { ...x0, position: asPos(x0.position, 0.2), style: { size: 0.05, weight: 800, color: '#FFFFFF', ...asObj<TextItem['style']>(x0.style) } as TextItem['style'] };
+            const anim = textAnim(x0, time - x0.start, height);
+            const anchorY = (x.position as { anchor?: string }).anchor === 'top' ? '0%' : (x.position as { anchor?: string }).anchor === 'bottom' ? '-100%' : '-50%';
+            const shown = anim.reveal != null && editingId !== x.id
+              ? ((x0.animation as { in?: string } | undefined)?.in === 'typewriter'
+                ? x.text.slice(0, Math.ceil(x.text.length * anim.reveal))
+                : x.text.split(' ').slice(0, Math.ceil(x.text.split(' ').length * anim.reveal)).join(' '))
+              : x.text;
             return (
             <div key={x.id} onPointerDown={(e) => beginDrag(e, x0, 'text', 'move')} onDoubleClick={() => startEdit(x0)}
               title={canEdit ? '드래그: 이동 · 더블클릭: 글자 수정 / Drag: move · Double-click: edit' : undefined}
-              style={{ cursor: canEdit ? (editingId === x.id ? 'text' : 'move') : 'pointer', touchAction: 'none',
-              position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`, transform: 'translate(-50%, -50%)',
+              style={{ cursor: canEdit ? (editingId === x.id ? 'text' : 'move') : 'pointer', touchAction: 'none', zIndex: zOf.get(x.id),
+              opacity: anim.opacity * (x0.opacity ?? 1),
+              position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`,
+              transform: `translate(-50%, ${anchorY}) translateY(${anim.dy * scale}px) scale(${anim.scale}) rotate(${Number((x0 as unknown as { rotation?: number }).rotation ?? 0)}deg)`,
+              fontStyle: (x.style as { italic?: boolean }).italic ? 'italic' : undefined,
+              letterSpacing: (x.style as { letterSpacing?: number }).letterSpacing != null ? `${(x.style as { letterSpacing?: number }).letterSpacing}em` : undefined,
+              textShadow: x.style.shadow ? `${x.style.shadow.x * height * scale / 400}px ${x.style.shadow.y * height * scale / 400}px ${x.style.shadow.blur}px ${x.style.shadow.color}` : undefined,
               width: `${(x.position?.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color ?? '#fff',
               fontSize: (Number(x.style.size) || 0.05) * height * scale, fontWeight: x.style.weight ?? 800, lineHeight: 1.15, whiteSpace: 'pre-line',
               fontFamily: `${x.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
-              background: x.style.background, padding: x.style.background ? '0.15em 0.4em' : 0, borderRadius: 3,
+              background: x.style.background, padding: x.style.background ? `${((x.style as { padding?: number }).padding ?? 0.25)}em` : 0, borderRadius: 3,
               WebkitTextStroke: x.style.stroke ? `${x.style.stroke.width * height * scale}px ${x.style.stroke.color}` : undefined,
               paintOrder: 'stroke fill', textTransform: x.style.uppercase ? 'uppercase' : 'none',
               outline: x.id === selectedId ? '2px dashed #22d3ee' : undefined, outlineOffset: 4,
@@ -424,7 +562,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
                     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); }
                     if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.innerText = x0.text; e.currentTarget.blur(); }
                   }}>{x.text}</span>
-              ) : x.text}
+              ) : shown}
               {handles(x0, 'text', true)}
             </div>
           ); })}
@@ -433,7 +571,8 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
             return (
             <div key={c.id} onPointerDown={(e) => beginDrag(e, c0, 'caption', 'move')}
               style={{ cursor: canEdit ? 'ns-resize' : 'pointer', touchAction: 'none', outline: c.id === selectedId ? '2px dashed #22d3ee' : undefined, outlineOffset: 4,
-              position: 'absolute', left: '7%', right: '7%', top: `${c.position.y * 100}%`, transform: 'translateY(-50%)', textAlign: 'center',
+              zIndex: zOf.get(c.id), position: 'absolute', left: `${((c.position as { x?: number }).x ?? 0.5) * 100}%`, width: '86%',
+              top: `${c.position.y * 100}%`, transform: 'translate(-50%, -50%)', textAlign: 'center',
               fontSize: (Number(c.style.size) || 0.045) * height * scale, fontWeight: c.style.weight ?? 800, color: c.style.color, lineHeight: 1.2,
               fontFamily: `${c.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
               textTransform: c.style.uppercase ? 'uppercase' : 'none',

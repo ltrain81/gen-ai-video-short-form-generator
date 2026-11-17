@@ -50,6 +50,8 @@ def _vector_key(ck: str, modality: str, scope: str, start: float, extra: str = "
     return f"{ck}:{modality}:{scope}:{start:.2f}{(':' + extra) if extra else ''}"
 
 
+MIN_EMBED_SIDE = 128
+
 # ------------------------------------------------------------------ dispatch
 def run(task: dict) -> None:
     name = task["task"]
@@ -66,6 +68,10 @@ def run(task: dict) -> None:
         handler(task)
     except Exception as exc:  # noqa: BLE001 - record failure on the stage, then re-raise for SQS retry/DLQ
         log.exception("Task %s failed", name)
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code") if hasattr(exc, "response") else None
+        if code == "ValidationException":  # bad input: retrying cannot help — fail the stage now (no endless "processing")
+            ingest.on_stage_done(task["contentKey"], _stage_name(task), "failed", str(exc)[:500], task.get("lang"))
+            return
         if task.get("final_attempt"):
             ingest.on_stage_done(task["contentKey"], _stage_name(task), "failed", str(exc), task.get("lang"))
         raise
@@ -268,6 +274,12 @@ def image_analyze(task: dict) -> None:
     image = next(p for p in content["manifest"]["images"] if p["index"] == idx)
     data = storage.s3().get_object(Bucket=_bucket(), Key=image["key"])["Body"].read()
     modality = "page" if content["kind"] == "document" else "image"
+    w, h = int(image.get("width") or 0), int(image.get("height") or 0)
+    if w and h and min(w, h) < MIN_EMBED_SIDE:
+        # Marengo rejects images under 128 px: keep the asset usable, just without a visual-search vector.
+        log.warning("Image %s:%s is %sx%s (< %s px); skipping the visual embedding", ck, idx, w, h, MIN_EMBED_SIDE)
+        ingest.on_stage_done(ck, f"image:{idx}")
+        return
     vecs = [{"key": _vector_key(ck, modality, "asset", 0, str(idx)), "embedding": models.embed_image(data=data),
              "metadata": {"contentKey": ck, "modality": modality, "scope": "asset", "page": idx,
                           "startSec": 0, "endSec": 0}}]

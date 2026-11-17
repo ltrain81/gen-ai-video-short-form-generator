@@ -2,6 +2,7 @@
 name: nature-visual
 description: Edit visual-led footage: nature, travel, landscapes, aerials, cityscapes, product beauty shots, b-roll reels.
 ---
+Defaults, not limits: the user's explicit request always wins over anything below.
 Signals: primarySignal=visual, low wordsPerMinute, many wide/b_roll shots, little on-screen text.
 
 How to cut
@@ -12,4 +13,4 @@ How to cut
 - Ignore speech unless the user asks for narration; mute dialogue (`update` volume 0) if it distracts.
 - Vertical from wide: `analyze_framing` with intent describing the subject (animal, waterfall, horizon). Wide
   scenery that loses meaning when cropped → "fit_blur".
-- Add music (a1) and fades; no captions unless there is narration. Optional title card at the start.
+- Add music (a1) and fades; no captions unless there is narration or the user asks for them. Optional title card at the start.

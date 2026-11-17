@@ -1,9 +1,16 @@
 ---
 name: vertical-reframe
-description: How to convert wide footage to 9:16 / 1:1 / 4:5 well.
+description: How to fit wide (or any) footage into 9:16 / 1:1 / 4:5 / custom frames — crop, box, split, PIP, blur.
 ---
-- Call `analyze_framing` for each kept range with a precise intent (what must stay visible). Apply its `reframe`
-  via `edit_timeline` update {itemId, set: {reframe}}.
-- Layout guide: one subject → crop; speaker + slide/board → split; wide scenery/groups → fit_blur; text-heavy
-  graphics → letterbox.
+These are defaults, not limits — if the user describes a different composition, build exactly that.
+- Call `analyze_framing` for each kept range with a precise intent (what must stay visible) and the aspect of the area
+  the clip will fill (the canvas, or the box). Apply its `reframe` via `edit_timeline` update {itemId, set: {reframe}}.
+- Layout guide: one subject → crop; speaker + slide/board → split; wide scenery/groups → fit_blur or box;
+  text-heavy graphics → letterbox or box (fit contain).
+- `box` puts the clip in any rectangle of the canvas, e.g. "1:1 game footage in a 9:16 frame with titles above and
+  captions below" = layout box, box {x:0, y:0.2188, w:1, h:0.5625}, background black|blur|#hex; then place titles in
+  the top band (y≈0.11) and captions in the bottom band (y≈0.89). Analyze framing with aspect "1:1" for that box.
+- Picture-in-picture / multi-layer: put clips on overlay tracks with transform {x, y, scale, rotation, crop}; add
+  more overlay tracks with add_track if you need several layers.
+- Always check the result with `preview_frames` before saying it is done.
 - Never reframe items the user pinned. If the user drags the frame, keep their choice.

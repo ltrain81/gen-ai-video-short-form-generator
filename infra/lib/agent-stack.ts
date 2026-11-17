@@ -98,6 +98,7 @@ export function onSubscribe(ctx) {
     props.table.grantReadWriteData(tools);
     props.mediaBucket.grantReadWrite(tools);
     props.ingest.grantModels(tools);
+    props.ingest.ingestQueue.grantSendMessages(tools); // render_video tool
     eventsApi.grantPublish(tools);
 
     const toolsApi = new apigw.HttpApi(this, 'ToolsApi', {

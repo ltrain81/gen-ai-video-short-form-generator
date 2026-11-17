@@ -130,7 +130,9 @@ def op_add_clip(tl: dict, op: dict, actor: str, assets: dict) -> dict:
               "opacity"):
         if k in op:
             item[k] = op[k]
-    if tl["settings"]["aspect"] == "9:16" and media_kind == "video" and (asset.get("width", 0) > asset.get("height", 0)):
+    cw, ch = tl["settings"]["width"], tl["settings"]["height"]
+    aw, ah = float(asset.get("width") or 0), float(asset.get("height") or 0)
+    if media_kind == "video" and aw and ah and tr["kind"] == "video" and abs(aw / ah - cw / ch) > 0.05:
         item.setdefault("reframe", {"mode": "auto"})
         item.setdefault("transform", {"x": 0.5, "y": 0.5, "scale": 1, "rotation": 0, "fit": "cover"})
     item["provenance"] = {"by": actor, **({"reason": op["reason"]} if op.get("reason") else {}),
@@ -202,6 +204,9 @@ def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     _guard(tl, f"items/{op['itemId']}/order", actor)
     tr, it, idx = find_item(tl, op["itemId"])
     dest = track(tl, op.get("track", tr["id"]))
+    ok = {"clip": {"video", "overlay", "audio"}, "text": {"text"}, "shape": {"text"}, "caption": {"caption"}}
+    if dest["kind"] not in ok.get(it.get("type"), {dest["kind"]}):
+        raise OpError(f"A {it.get('type')} cannot go on a {dest['kind']} track")
     tr["items"].pop(idx)
     if dest["kind"] == "video":
         dest["items"].insert(min(int(op.get("index", len(dest["items"]))), len(dest["items"])), it)
@@ -215,10 +220,124 @@ def op_move(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
 
 UPDATABLE = {"transform", "reframe", "kenBurns", "volume", "fadeIn", "fadeOut", "effects", "keyframes", "opacity",
              "transitionIn", "transitionOut", "speed", "speedCurve", "mode", "text", "style", "position", "animation",
-             "role", "preset", "start", "duration", "page", "fill", "box", "words"}
+             "role", "preset", "start", "duration", "page", "fill", "box", "words", "stroke", "shape", "radius",
+             "progress", "assetId", "srcIn", "srcOut"}
 
 
-OBJECT_PRCORNERS = {"tl": (0.13, 0.08), "tr": (0.87, 0.08), "bl": (0.13, 0.92), "br": (0.87, 0.92)}
+TRACK_KINDS = {"video", "overlay", "text", "caption", "audio"}
+TRACK_PROPS = {"name", "hidden", "muted", "locked", "volume", "audioRole"}
+TRACK_PREFIX = {"video": "v", "overlay": "o", "text": "t", "caption": "c", "audio": "a"}
+
+
+def op_add_track(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    """Add a layer. Tracks render bottom → top in array order; only the first video track is the magnetic main
+    track — any further 'video' track is a free-positioned layer (same as overlay)."""
+    kind = op.get("kind")
+    if kind not in TRACK_KINDS:
+        raise OpError(f"kind must be one of {sorted(TRACK_KINDS)}")
+    if kind == "video" and any(t["kind"] == "video" for t in tl["tracks"]):
+        kind = "overlay"
+    prefix = TRACK_PREFIX[kind]
+    n = 1 + max([int(t["id"][1:]) for t in tl["tracks"] if t["id"][:1] == prefix and t["id"][1:].isdigit()] or [0])
+    tr: dict[str, Any] = {"id": f"{prefix}{n}", "kind": kind, "name": str(op.get("name") or f"{kind} {n}")[:40], "items": []}
+    for k in TRACK_PROPS - {"name"}:
+        if k in op:
+            tr[k] = op[k]
+    idx = op.get("index")
+    tl["tracks"].insert(len(tl["tracks"]) if idx is None else max(1, min(int(idx), len(tl["tracks"]))), tr)
+    return {"trackId": tr["id"]}
+
+
+def op_update_track(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    tr = track(tl, op["trackId"])
+    for k, v in (op.get("set") or {}).items():
+        if k not in TRACK_PROPS:
+            raise OpError(f"Track property {k} is not updatable; use {sorted(TRACK_PROPS)}")
+        _guard(tl, f"tracks/{tr['id']}/{k}", actor)
+        if k == "volume" and not 0 <= float(v) <= 4:
+            raise OpError("track volume must be 0..4")
+        tr[k] = v
+    return {}
+
+
+def op_remove_track(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    tr = track(tl, op["trackId"])
+    if tr is main_track(tl):
+        raise OpError("The main video track cannot be removed")
+    if actor == "agent" and any(is_pinned(tl, f"items/{i['id']}") for i in tr["items"]):
+        raise OpError("Track holds items pinned by the user")
+    tl["tracks"].remove(tr)
+    return {}
+
+
+def op_move_track(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    """Change stacking order (index 0 = bottom). The main track stays at the bottom."""
+    tr = track(tl, op["trackId"])
+    if tr is main_track(tl):
+        raise OpError("The main video track stays at the bottom")
+    tl["tracks"].remove(tr)
+    tl["tracks"].insert(max(1, min(int(op["index"]), len(tl["tracks"]))), tr)
+    return {}
+
+
+SHAPES = {"rect", "roundRect", "ellipse", "progressBar"}
+
+
+def op_add_shape(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    """Graphic shapes (boxes behind text, bars, frames, progress bars). Live on text-kind tracks so they stack
+    with titles; put them on a track below the text track to sit behind text."""
+    shape = op.get("shape", "rect")
+    if shape not in SHAPES:
+        raise OpError(f"shape must be one of {sorted(SHAPES)}")
+    box = op.get("box") or {}
+    if not isinstance(box, dict) or not all(k in box for k in ("x", "y", "w", "h")):
+        raise OpError("box {x, y, w, h} (0..1 of the canvas, top-left origin) is required")
+    tid = op.get("track")
+    if not tid:
+        g = next((t for t in tl["tracks"] if t["kind"] == "text" and t.get("name") == "Graphics"), None)
+        if not g:
+            first_text = next((i for i, t in enumerate(tl["tracks"]) if t["kind"] == "text"), len(tl["tracks"]))
+            tid = op_add_track(tl, {"kind": "text", "name": "Graphics", "index": first_text}, actor, _assets)["trackId"]
+        else:
+            tid = g["id"]
+    tr = track(tl, tid)
+    if tr["kind"] != "text":
+        raise OpError("Shapes go on a text-kind track")
+    item = {"id": new_id("s"), "type": "shape", "shape": shape, "start": round(float(op.get("start", 0)), 4),
+            "duration": max(MIN_DURATION, float(op.get("duration", 3))), "fill": str(op.get("fill", "#000000")),
+            "box": {k: float(box[k]) for k in ("x", "y", "w", "h")}, "provenance": {"by": actor}}
+    for k in ("stroke", "opacity", "radius", "progress", "transitionIn", "transitionOut"):
+        if k in op:
+            item[k] = op[k]
+    tr["items"].append(item)
+    return {"itemId": item["id"]}
+
+
+def op_add_caption(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
+    """One caption item (e.g. for a voiceover/TTS track, or hand-written). words [{s,e,w}] in timeline time, or
+    `text` spread evenly over start..start+duration."""
+    tr = track(tl, op.get("track", "c1"))
+    if tr["kind"] != "caption":
+        raise OpError("add_caption needs a caption track")
+    start, dur = float(op.get("start", 0)), max(MIN_DURATION, float(op.get("duration", 2)))
+    words = op.get("words")
+    if not words:
+        toks = str(op.get("text", "")).split()
+        if not toks:
+            raise OpError("words or text is required")
+        step = dur / len(toks)
+        words = [{"s": round(start + i * step, 3), "e": round(start + (i + 1) * step, 3), "w": w} for i, w in enumerate(toks)]
+    preset = op.get("preset", "clean")
+    style = {**CAPTION_PRESETS.get(preset, CAPTION_PRESETS["clean"]), **(op.get("style") or {})}
+    item = {"id": new_id("c"), "type": "caption", "start": round(float(words[0]["s"]), 3),
+            "duration": max(MIN_DURATION, round(float(words[-1]["e"]) - float(words[0]["s"]), 3)), "words": words,
+            "preset": preset, "style": style, "position": {"y": 0.72, **(op.get("position") or {})},
+            "provenance": {"by": actor}}
+    tr["items"].append(item)
+    return {"itemId": item["id"]}
+
+
+CORNERS = {"tl": (0.13, 0.08), "tr": (0.87, 0.08), "bl": (0.13, 0.92), "br": (0.87, 0.92)}
 
 
 def op_brand(tl: dict, op: dict, actor: str, assets: dict) -> dict:
@@ -314,9 +433,10 @@ def op_add_text(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     if op.get("style") is not None and not isinstance(op["style"], dict):
         raise OpError("style must be an object, e.g. {size: 0.06, color: '#FFFFFF', weight: 900}")
     style = {**DEFAULT_TEXT_STYLE, **(op.get("style") or {})}
-    if not isinstance(style.get("size"), (int, float)) or not 0.01 <= style["size"] <= 0.3:
+    if not isinstance(style.get("size"), (int, float)):
         style["size"] = DEFAULT_TEXT_STYLE["size"]  # size is a fraction of canvas height
-    item = {"id": new_id("x"), "type": "text", "text": str(op["text"])[:500], "role": op.get("role", "free"),
+    style["size"] = min(0.4, max(0.01, float(style["size"])))
+    item = {"id": new_id("x"), "type": "text", "text": str(op["text"])[:4000], "role": op.get("role", "free"),
             "start": round(float(op.get("start", 0)), 4), "duration": max(MIN_DURATION, float(op.get("duration", 3))),
             "style": style,
             "position": {**DEFAULT_TEXT_POSITION, **(op.get("position") or {})},
@@ -360,16 +480,41 @@ def op_captions(tl: dict, op: dict, actor: str, assets: dict) -> dict:
     return {"captions": len(groups)}
 
 
+def _canvas_for(aspect: Any, s: dict) -> tuple[str, int, int]:
+    """Any aspect: a preset, "W:H" (e.g. "21:9", "2:3"), or custom width/height. Long side defaults to 1920."""
+    if aspect in ASPECTS:
+        return aspect, *ASPECTS[aspect]
+    if isinstance(aspect, str) and ":" in aspect:
+        try:
+            a, b = (float(x) for x in aspect.split(":", 1))
+        except ValueError as exc:
+            raise OpError("aspect must look like '21:9'") from exc
+        if a <= 0 or b <= 0 or not 0.2 <= a / b <= 5:
+            raise OpError("aspect ratio must be between 1:5 and 5:1")
+        long_side = int(s.get("longSide", 1920))
+        w, h = (long_side, long_side * b / a) if a >= b else (long_side * a / b, long_side)
+        return aspect, int(round(w / 2)) * 2, int(round(h / 2)) * 2
+    if aspect == "custom" or ("width" in s and "height" in s):
+        return "custom", int(s.get("width", 0)), int(s.get("height", 0))
+    raise OpError(f"aspect must be one of {sorted(ASPECTS)}, 'W:H' or custom width/height")
+
+
 def op_settings(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     s = op.get("set") or {}
     for k in s:
         _guard(tl, f"settings/{k}", actor)
-    if "aspect" in s:
-        if s["aspect"] not in ASPECTS:
-            raise OpError(f"aspect must be one of {sorted(ASPECTS)}")
-        tl["settings"]["width"], tl["settings"]["height"] = ASPECTS[s["aspect"]]
-        tl["settings"]["safeZone"] = "shorts" if s["aspect"] == "9:16" else "none"
-    for k in ("aspect", "fps", "background", "loudness", "safeZone", "recipe", "brandKitId"):
+    if "aspect" in s or ("width" in s and "height" in s):
+        aspect, w, h = _canvas_for(s.get("aspect", "custom"), s)
+        if not (240 <= w <= 4096 and 240 <= h <= 4096):
+            raise OpError("width/height must be between 240 and 4096 px")
+        tl["settings"]["aspect"], tl["settings"]["width"], tl["settings"]["height"] = aspect, w - w % 2, h - h % 2
+        if "safeZone" not in s:
+            tl["settings"]["safeZone"] = "shorts" if w < h else "none"
+    if "fps" in s and not 1 <= float(s["fps"]) <= 120:
+        raise OpError("fps must be between 1 and 120")
+    if "loudness" in s and not -40 <= float(s["loudness"]) <= -5:
+        raise OpError("loudness (LUFS) must be between -40 and -5")
+    for k in ("fps", "background", "loudness", "safeZone", "recipe", "brandKitId", "ducking"):
         if k in s:
             tl["settings"][k] = s[k]
     return {}
@@ -458,6 +603,8 @@ OPS = {
     "add_clip": op_add_clip, "remove": op_remove, "trim": op_trim, "split": op_split, "move": op_move,
     "update": op_update, "add_text": op_add_text, "captions": op_captions, "settings": op_settings,
     "meta": op_meta, "marker": op_marker, "clear_track": op_clear_track, "pin": op_pin, "brand": op_brand,
+    "add_track": op_add_track, "update_track": op_update_track, "remove_track": op_remove_track,
+    "move_track": op_move_track, "add_shape": op_add_shape, "add_caption": op_add_caption,
 }
 
 
@@ -477,6 +624,10 @@ def pins_for(op: dict, out: dict) -> list[str]:
         return [f"items/{iid}/{k}" for k in (op.get("set") or {})]
     if name in {"settings", "meta"}:
         return [f"{name}/{k}" for k in (op.get("set") or {})]
+    if name == "update_track":
+        return [f"tracks/{op.get('trackId')}/{k}" for k in (op.get("set") or {})]
+    if name in {"add_shape", "add_caption"} and out.get("itemId"):
+        return [f"items/{out['itemId']}"]
     return []
 
 
@@ -504,8 +655,14 @@ def apply(timeline: dict, ops: list[dict], actor: str, assets: dict,
     return tl, results
 
 
-def summarize(tl: dict) -> dict:
-    """Compact, token-friendly view of a timeline for the agent."""
+DETAIL_KEYS = ("transform", "reframe", "opacity", "volume", "fadeIn", "fadeOut", "transitionIn", "transitionOut",
+               "effects", "keyframes", "mode", "speedCurve", "kenBurns")
+
+
+def summarize(tl: dict, full: bool = False) -> dict:
+    """Token-friendly view for the agent. `full=True` returns every property (L5 raw)."""
+    if full:
+        return copy.deepcopy(tl)
     out = {"settings": tl["settings"], "durationSec": round(duration(tl), 2), "meta": tl.get("meta", {}),
            "pins": tl.get("pins", []), "markers": tl.get("markers", []), "tracks": []}
     for tr in tl["tracks"]:
@@ -516,12 +673,32 @@ def summarize(tl: dict) -> dict:
                 s.update(asset=it["assetId"], kind=it["mediaKind"], srcIn=it.get("srcIn"), srcOut=it.get("srcOut"))
                 if it.get("speed", 1) != 1:
                     s["speed"] = it["speed"]
+                rf = it.get("reframe") if isinstance(it.get("reframe"), dict) else None
+                if rf:
+                    s["layout"] = rf.get("layout", "crop")
+                    if rf.get("box"):
+                        s["box"] = rf["box"]
+                for k in ("transform", "opacity", "volume", "mode", "fadeIn", "fadeOut"):
+                    if it.get(k) not in (None, 1, 0, "normal"):
+                        s[k] = it[k]
+                if it.get("effects"):
+                    s["effects"] = [e.get("type") for e in it["effects"] if isinstance(e, dict)]
             elif it["type"] == "text":
                 s["text"] = it["text"][:80]
+                st = it.get("style") if isinstance(it.get("style"), dict) else {}
+                s["style"] = {k: st[k] for k in ("size", "color", "font", "weight", "background", "align") if k in st}
+                s["position"] = it.get("position")
             elif it["type"] == "caption":
                 s["text"] = " ".join(w["w"] for w in it["words"])[:80]
+            elif it["type"] == "shape":
+                s.update(shape=it.get("shape"), box=it.get("box"), fill=it.get("fill"))
+            if it.get("transitionIn"):
+                s["transitionIn"] = it["transitionIn"]
+            if it.get("keyframes"):
+                s["keyframes"] = sorted(it["keyframes"])
             if it.get("provenance", {}).get("reason"):
                 s["why"] = it["provenance"]["reason"][:120]
             items.append(s)
-        out["tracks"].append({"id": tr["id"], "kind": tr["kind"], "name": tr["name"], "items": items})
+        out["tracks"].append({"id": tr["id"], "kind": tr["kind"], "name": tr["name"], "items": items,
+                              **{k: tr[k] for k in ("volume", "muted", "hidden", "audioRole", "locked") if k in tr}})
     return out

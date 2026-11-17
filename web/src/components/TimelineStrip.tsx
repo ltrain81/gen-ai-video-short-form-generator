@@ -238,8 +238,25 @@ export default function TimelineStrip({ timeline, time, onSeek, selectedId, onSe
         <div style={{ width: NAME_W, flexShrink: 0 }}>
           <div style={{ height: 18 }} />
           {tracks.map((tr) => (
-            <div key={tr.id} style={{ height: tr.kind === 'caption' ? 18 : 30, marginBottom: 4, fontSize: 11, color: '#8d99a8', display: 'flex', alignItems: 'center' }}>{tr.name}</div>
+            <div key={tr.id} className="tl-trackname" style={{ height: tr.kind === 'caption' ? 18 : 30, marginBottom: 4, fontSize: 11, color: tr.hidden ? '#5b6573' : '#8d99a8', display: 'flex', alignItems: 'center', gap: 2 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, textDecoration: tr.hidden ? 'line-through' : undefined }} title={tr.name}>{tr.name}</span>
+              {editable && onOps && (
+                <span className="tl-trackbtns">
+                  <button type="button" title={t('hideTrack')} onClick={() => onOps([{ op: 'update_track', trackId: tr.id, set: { hidden: !tr.hidden } }], 'track visibility')}>{tr.hidden ? '◌' : '●'}</button>
+                  {(tr.kind === 'audio' || tr.kind === 'video' || tr.kind === 'overlay') && (
+                    <button type="button" title={t('muteTrack')} onClick={() => onOps([{ op: 'update_track', trackId: tr.id, set: { muted: !tr.muted } }], 'track mute')}>{tr.muted ? '🔇' : '🔊'}</button>
+                  )}
+                </span>
+              )}
+            </div>
           ))}
+          {editable && onOps && (
+            <select aria-label={t('addTrack')} value="" onChange={(e) => { if (e.target.value) onOps([{ op: 'add_track', kind: e.target.value }], 'add track'); }}
+              style={{ fontSize: 11, width: NAME_W - 6, background: 'transparent', color: '#8d99a8', border: '1px dashed rgba(127,127,127,0.5)', borderRadius: 4 }}>
+              <option value="">+ {t('addTrack')}</option>
+              {['overlay', 'text', 'caption', 'audio'].map((k) => <option key={k} value={k}>{t(`trackKind_${k}` as never)}</option>)}
+            </select>
+          )}
         </div>
         <div ref={scrollRef} style={{ flex: 1, minWidth: 0, overflowX: zoom > 1 ? 'auto' : 'hidden', overflowY: 'hidden', paddingRight: 12 }} onWheel={onWheel}>
           <div ref={innerRef} style={{ position: 'relative', width: `${zoom * 100}%`, touchAction: 'none' }}>

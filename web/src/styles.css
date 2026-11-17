@@ -53,3 +53,6 @@ body { margin: 0; }
 .cv-handle.br { right: -8px; bottom: -8px; cursor: nwse-resize; }
 .cv-handle.mr { right: -8px; top: 50%; margin-top: -6px; cursor: ew-resize; border-radius: 6px; }
 .cv-edit { outline: none; background: rgba(0,0,0,0.25); caret-color: #22d3ee; cursor: text; }
+.tl-trackbtns { display: none; gap: 1px; }
+.tl-trackname:hover .tl-trackbtns { display: inline-flex; }
+.tl-trackbtns button { font-size: 9px; padding: 0 2px; background: none; border: 0; color: inherit; cursor: pointer; }
