@@ -3,6 +3,7 @@ import ChatBubble from '@cloudscape-design/chat-components/chat-bubble';
 import LoadingBar from '@cloudscape-design/chat-components/loading-bar';
 import Badge from '@cloudscape-design/components/badge';
 import Box from '@cloudscape-design/components/box';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import Button from '@cloudscape-design/components/button';
 import PromptInput from '@cloudscape-design/components/prompt-input';
 import SpaceBetween from '@cloudscape-design/components/space-between';
@@ -75,16 +76,24 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
                 : <Avatar color="gen-ai" iconName="gen-ai" ariaLabel="AI" tooltipText="AI" loading={e.pending && !e.text} />}
               showLoadingBar={e.pending}>
               <SpaceBetween size="xs">
-                {e.text && <div style={{ whiteSpace: 'pre-wrap' }}>{e.text}</div>}
-                {!!e.tools?.length && (
-                  <SpaceBetween direction="horizontal" size="xxs">
-                    {e.tools.map((x, i) => (
-                      <StatusIndicator key={i} type={x.status === 'completed' ? 'success' : x.status === 'failed' ? 'error' : 'loading'}>
-                        {TOOL_LABELS[x.name]?.[lang] ?? x.name}
-                      </StatusIndicator>
-                    ))}
-                  </SpaceBetween>
-                )}
+                {e.text && <Markdown text={e.text} />}
+                {!!e.tools?.length && (() => {
+                  const last = e.tools[e.tools.length - 1];
+                  const running = e.tools.find((x) => x.status === 'in_progress');
+                  const head = running ? (TOOL_LABELS[running.name]?.[lang] ?? running.name) : t('stepsDone', { n: e.tools.length });
+                  return (
+                    <ExpandableSection variant="footer" headerText={
+                      <StatusIndicator type={running ? 'loading' : last.status === 'failed' ? 'warning' : 'success'}>{head}</StatusIndicator>}>
+                      <SpaceBetween direction="horizontal" size="xxs">
+                        {e.tools.map((x, i) => (
+                          <StatusIndicator key={i} type={x.status === 'completed' ? 'success' : x.status === 'failed' ? 'error' : 'loading'}>
+                            {TOOL_LABELS[x.name]?.[lang] ?? x.name}
+                          </StatusIndicator>
+                        ))}
+                      </SpaceBetween>
+                    </ExpandableSection>
+                  );
+                })()}
                 {e.question && <QuestionCard q={e.question} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />}
                 {e.error && <StatusIndicator type="error">{e.error}</StatusIndicator>}
               </SpaceBetween>
@@ -149,4 +158,24 @@ function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, 
       </SpaceBetween>
     </Box>
   );
+}
+
+/** Minimal, safe Markdown (bold, inline code, bullets, line breaks) — no HTML injection. */
+function Markdown({ text }: { text: string }) {
+  const inline = (line: string, key: number) => {
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return <span key={key}>{parts.map((p, i) => p.startsWith('**') && p.endsWith('**') ? <b key={i}>{p.slice(2, -2)}</b>
+      : p.startsWith('`') && p.endsWith('`') ? <code key={i}>{p.slice(1, -1)}</code> : p)}</span>;
+  };
+  const lines = text.replace(/\s+$/, '').split('\n');
+  const out: ReactNode[] = [];
+  let list: ReactNode[] = [];
+  const flush = () => { if (list.length) { out.push(<ul key={`l${out.length}`} style={{ margin: '4px 0', paddingLeft: 20 }}>{list}</ul>); list = []; } };
+  lines.forEach((l, i) => {
+    const m = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (m) list.push(<li key={i}>{inline(m[1], i)}</li>);
+    else { flush(); out.push(l.trim() ? <div key={i}>{inline(l.trim(), i)}</div> : <div key={i} style={{ height: 6 }} />); }
+  });
+  flush();
+  return <div>{out}</div>;
 }

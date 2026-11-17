@@ -91,8 +91,14 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
   const syncEl = useCallback((el: HTMLMediaElement | null, c: ClipItem | undefined, t: number, url?: string) => {
     if (!el) return;
     if (!c || !url) { if (!el.paused) el.pause(); return; }
-    if (el.dataset.src !== url) { el.dataset.src = url; el.src = url; }
     const want = srcTime(c, t);
+    if (el.dataset.src !== url) {
+      el.dataset.src = url; el.src = url;
+      // Seeking before metadata is ignored by browsers: re-apply once it is known.
+      el.addEventListener('loadedmetadata', () => { el.currentTime = Number(el.dataset.want ?? want); }, { once: true });
+    }
+    el.dataset.want = String(want);
+    if (el.readyState === 0 && el.networkState !== el.NETWORK_LOADING) el.load();
     if (Math.abs(el.currentTime - want) > (playing ? 0.35 : 0.04)) el.currentTime = want;
     el.playbackRate = c.speed ?? 1;
     el.volume = Math.min(1, Math.max(0, c.volume ?? 1));
@@ -158,9 +164,9 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
           <audio ref={musicRef} preload="auto" />
           {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x) => (
             <div key={x.id} style={{
-              position: 'absolute', left: `${x.position.x * 100}%`, top: `${x.position.y * 100}%`, transform: 'translate(-50%, -50%)',
-              width: `${(x.position.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color,
-              fontSize: x.style.size * height * scale, fontWeight: x.style.weight ?? 800, lineHeight: 1.15,
+              position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`, transform: 'translate(-50%, -50%)',
+              width: `${(x.position?.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color ?? '#fff',
+              fontSize: (Number(x.style.size) || 0.05) * height * scale, fontWeight: x.style.weight ?? 800, lineHeight: 1.15, whiteSpace: 'pre-line',
               fontFamily: `${x.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
               background: x.style.background, padding: x.style.background ? '0.15em 0.4em' : 0, borderRadius: 6,
               WebkitTextStroke: x.style.stroke ? `${x.style.stroke.width * height * scale}px ${x.style.stroke.color}` : undefined,
@@ -171,7 +177,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
           {captions.filter((c) => time >= c.start && time < c.start + c.duration).map((c) => (
             <div key={c.id} style={{
               position: 'absolute', left: '7%', right: '7%', top: `${c.position.y * 100}%`, transform: 'translateY(-50%)', textAlign: 'center',
-              fontSize: c.style.size * height * scale, fontWeight: c.style.weight ?? 800, color: c.style.color, lineHeight: 1.2,
+              fontSize: (Number(c.style.size) || 0.045) * height * scale, fontWeight: c.style.weight ?? 800, color: c.style.color, lineHeight: 1.2,
               fontFamily: `${c.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
               textTransform: c.style.uppercase ? 'uppercase' : 'none',
               WebkitTextStroke: c.style.stroke ? `${c.style.stroke.width * height * scale}px ${c.style.stroke.color}` : undefined, paintOrder: 'stroke fill',

@@ -100,15 +100,30 @@ export default function ProjectPage() {
         setBusy(false);
         setEntries((x) => x.map((m) => (m.pending ? { ...m, pending: false, error: e.type === 'turn.failed' ? (e.error ?? 'failed') : undefined } : m)));
         loadProject().catch(() => undefined);
+        // The saved transcript is authoritative (streamed deltas can be lost or repeated on reconnects).
+        api.chat(projectId).then((c) => {
+          setEntries((x) => {
+            const questions = x.filter((m) => m.question);
+            const hist = fromHistory(c.messages);
+            questions.forEach((q) => { const i = hist.findIndex((h) => h.role === 'assistant' && q.text && h.text === q.text); if (i >= 0) hist[i] = { ...hist[i], question: q.question }; });
+            const lastQ = questions[questions.length - 1];
+            if (lastQ && !hist.some((h) => h.question)) { const i = hist.map((h) => h.role).lastIndexOf('assistant'); if (i >= 0) hist[i] = { ...hist[i], question: lastQ.question }; }
+            return hist;
+          });
+        }).catch(() => undefined);
         break;
     }
   }, [loadProject]);
 
   useEffect(() => {
     if (!me) return;
+    // StrictMode mounts effects twice; the connect is async, so guard against a leaked first subscription.
+    let cancelled = false;
     let off: (() => void) | undefined;
-    subscribeProject(projectId, me.sub, onEvent).then((f) => { off = f; }).catch((e) => notify('error', `realtime: ${e.message}`));
-    return () => off?.();
+    subscribeProject(projectId, me.sub, onEvent)
+      .then((f) => { if (cancelled) f(); else off = f; })
+      .catch((e) => notify('error', `realtime: ${e.message}`));
+    return () => { cancelled = true; off?.(); };
   }, [projectId, me, onEvent, notify]);
 
   const selection = useMemo(() => {

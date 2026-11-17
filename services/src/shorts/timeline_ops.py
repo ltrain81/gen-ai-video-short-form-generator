@@ -213,12 +213,20 @@ UPDATABLE = {"transform", "reframe", "kenBurns", "volume", "fadeIn", "fadeOut", 
              "role", "preset", "start", "duration", "page", "fill", "box", "words"}
 
 
+OBJECT_PROPS = {"transform", "reframe", "kenBurns", "style", "position", "animation", "keyframes", "transitionIn",
+                "transitionOut", "box"}
+
+
 def op_update(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     _, it, _ = find_item(tl, op["itemId"])
     changed = []
     for k, v in (op.get("set") or {}).items():
         if k not in UPDATABLE:
             raise OpError(f"Property {k} is not updatable")
+        if k in OBJECT_PROPS and v is not None and not isinstance(v, dict):
+            raise OpError(f"{k} must be an object (e.g. style: {{size: 0.05, color: '#FFFFFF'}})")
+        if k == "style" and isinstance(v, dict) and it.get("type") in {"text", "caption"}:
+            v = {**(it.get("style") or {}), **v}
         _guard(tl, f"items/{it['id']}/{k}", actor)
         if v is None:
             it.pop(k, None)
@@ -228,13 +236,22 @@ def op_update(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     return {"changed": changed}
 
 
+DEFAULT_TEXT_STYLE = {"font": "Pretendard", "size": 0.05, "weight": 800, "color": "#FFFFFF",
+                      "stroke": {"color": "#000000", "width": 0.005}, "align": "center"}
+DEFAULT_TEXT_POSITION = {"x": 0.5, "y": 0.2, "anchor": "center", "maxWidth": 0.86}
+
+
 def op_add_text(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
     tr = track(tl, op.get("track", "t1"))
+    if op.get("style") is not None and not isinstance(op["style"], dict):
+        raise OpError("style must be an object, e.g. {size: 0.06, color: '#FFFFFF', weight: 900}")
+    style = {**DEFAULT_TEXT_STYLE, **(op.get("style") or {})}
+    if not isinstance(style.get("size"), (int, float)) or not 0.01 <= style["size"] <= 0.3:
+        style["size"] = DEFAULT_TEXT_STYLE["size"]  # size is a fraction of canvas height
     item = {"id": new_id("x"), "type": "text", "text": str(op["text"])[:500], "role": op.get("role", "free"),
             "start": round(float(op.get("start", 0)), 4), "duration": max(MIN_DURATION, float(op.get("duration", 3))),
-            "style": op.get("style") or {"font": "Pretendard", "size": 0.05, "weight": 800, "color": "#FFFFFF",
-                                         "stroke": {"color": "#000000", "width": 0.005}, "align": "center"},
-            "position": op.get("position") or {"x": 0.5, "y": 0.2, "anchor": "center", "maxWidth": 0.86},
+            "style": style,
+            "position": {**DEFAULT_TEXT_POSITION, **(op.get("position") or {})},
             "animation": op.get("animation") or {"in": "pop", "out": "fade"},
             "provenance": {"by": actor, **({"reason": op["reason"]} if op.get("reason") else {})}}
     tr["items"].append(item)

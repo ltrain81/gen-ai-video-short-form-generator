@@ -88,6 +88,7 @@ export const en: typeof ko = {
   "pages": "Pages",
   "trash": "Trash",
   "restore": "Restore",
+  "stepsDone": "{n} steps done",
   "selected": "Selected",
   "agentWorking": "AI is working…",
   "chatPlaceholder": "What should change? e.g. \"shorten the first shot\", \"bigger captions\"",

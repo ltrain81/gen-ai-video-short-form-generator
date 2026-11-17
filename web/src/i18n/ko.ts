@@ -86,6 +86,7 @@ export const ko = {
   pages: '페이지',
   trash: '휴지통',
   restore: '복원',
+  stepsDone: '작업 {n}단계 완료',
   selected: '선택됨',
   agentWorking: 'AI가 작업 중입니다…',
   chatPlaceholder: '무엇을 바꿀까요? 예: "첫 장면을 더 짧게", "자막을 크게"',
