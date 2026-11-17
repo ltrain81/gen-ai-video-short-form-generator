@@ -153,7 +153,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
   return (
     <SpaceBetween size="s">
       <div style={{ display: 'flex', justifyContent: 'center' }}>
-        <div ref={stageRef} style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 10 }}>
+        <div ref={stageRef} style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4 }}>
           {blurBg(mainItem)}
           <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
             style={mainItem?.mediaKind === 'video' ? mediaStyle(mainItem, srcTime(mainItem, time), 'cover') : { display: 'none' }} />
@@ -168,7 +168,7 @@ export default function Preview({ timeline, media, time, onTime, selectedId }: P
               width: `${(x.position?.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color ?? '#fff',
               fontSize: (Number(x.style.size) || 0.05) * height * scale, fontWeight: x.style.weight ?? 800, lineHeight: 1.15, whiteSpace: 'pre-line',
               fontFamily: `${x.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
-              background: x.style.background, padding: x.style.background ? '0.15em 0.4em' : 0, borderRadius: 6,
+              background: x.style.background, padding: x.style.background ? '0.15em 0.4em' : 0, borderRadius: 3,
               WebkitTextStroke: x.style.stroke ? `${x.style.stroke.width * height * scale}px ${x.style.stroke.color}` : undefined,
               paintOrder: 'stroke fill', textTransform: x.style.uppercase ? 'uppercase' : 'none',
               outline: x.id === selectedId ? '2px dashed #22d3ee' : undefined,

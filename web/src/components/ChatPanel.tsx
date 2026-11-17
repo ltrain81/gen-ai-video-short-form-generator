@@ -144,7 +144,7 @@ function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
               {(q.clips ?? []).map((c, i) => (
                 <div key={i} onClick={() => !done && setPicked(q.multiple ? (picked.includes(i) ? picked.filter((x) => x !== i) : [...picked, i]) : [i])}
-                  style={{ cursor: done ? 'default' : 'pointer', borderRadius: 8, padding: 4, outline: picked.includes(i) ? '2px solid #0972d3' : '1px solid rgba(127,127,127,0.3)' }}>
+                  style={{ cursor: done ? 'default' : 'pointer', borderRadius: 4, padding: 4, outline: picked.includes(i) ? '2px solid #0972d3' : '1px solid rgba(127,127,127,0.3)' }}>
                   {thumbs[c.assetId] ? <img className="thumb" src={thumbs[c.assetId]} alt="" /> : <div className="thumb-placeholder" />}
                   <Box variant="small" fontWeight="bold">{c.label ?? titles[c.assetId] ?? c.assetId}</Box>
                   <Box variant="small" color="text-body-secondary">{fmtTime(c.startSec)}–{fmtTime(c.endSec)}</Box>

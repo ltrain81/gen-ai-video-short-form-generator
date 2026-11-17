@@ -1,5 +1,5 @@
 import '@cloudscape-design/global-styles/index.css';
-import { applyMode, Mode } from '@cloudscape-design/global-styles';
+import { applyMode, Mode, setThemeClass, Theme } from '@cloudscape-design/global-styles';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -8,6 +8,10 @@ import { AuthProvider, configureAuth } from './auth';
 import { loadConfig } from './config';
 import { I18nProvider } from './i18n';
 import './styles.css';
+
+// Cloudscape One Theme (public tokens). The Ember Modern typeface ships only with the internal global-styles
+// package; the open-source release is planned for Q1 2027 — until then the default font is used.
+setThemeClass(Theme.OneTheme, document.body);
 
 const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
 applyMode(localStorage.getItem('mode') === 'dark' || (prefersDark && !localStorage.getItem('mode')) ? Mode.Dark : Mode.Light);
