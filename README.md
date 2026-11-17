@@ -44,7 +44,7 @@ is inspectable, every property is editable, and your manual edits are pinned so 
   <img alt="AWS Shorts V2 architecture" src="docs/architecture/architecture-light.png">
 </picture>
 
-<sub>Source: [`docs/architecture/architecture.html`](docs/architecture/architecture.html) (HTML/SVG, palette validated for color-vision deficiency in light and dark). Regenerate the PNGs with `node docs/architecture/render.mjs` (Playwright).</sub>
+<sub>Source: [`docs/architecture/architecture.html`](docs/architecture/architecture.html) (HTML/SVG, palette validated for color-vision deficiency in light and dark). Regenerate the PNGs with `node docs/architecture/render.mjs` (Playwright). Service icons: [AWS Architecture Icons](https://aws.amazon.com/architecture/icons/).</sub>
 
 Request flow in short:
 

@@ -31,8 +31,8 @@
   .legend .dash { border-top-style: dashed; }
   svg text { font-family: inherit; }
   .lane-title { font-size: 13px; font-weight: 700; fill: var(--text-secondary); letter-spacing: 0.04em; text-transform: uppercase; }
-  .node-title { font-size: 15px; font-weight: 650; fill: var(--text-primary); }
-  .node-sub { font-size: 12px; fill: var(--text-secondary); }
+  .node-title { font-size: 14px; font-weight: 650; fill: var(--text-primary); }
+  .node-sub { font-size: 11.5px; fill: var(--text-secondary); }
   .edge-label { font-size: 11.5px; fill: var(--text-secondary); }
   .note { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
 </style>
@@ -48,14 +48,15 @@
 </div>
 <script>
 const LANES = [
-  { id: 'fe', name: 'Frontend', color: 'var(--s1)', x: 150, y: 520, w: 250, h: 230 },
-  { id: 'api', name: 'API & realtime', color: 'var(--s4)', x: 440, y: 20, w: 250, h: 470 },
-  { id: 'ai', name: 'AI editor', color: 'var(--s6)', x: 730, y: 20, w: 520, h: 470 },
-  { id: 'ing', name: 'Ingest & render', color: 'var(--s2)', x: 440, y: 520, w: 810, h: 360 },
-  { id: 'mod', name: 'Models', color: 'var(--s5)', x: 1290, y: 20, w: 310, h: 560 },
-  { id: 'data', name: 'Data', color: 'var(--s3)', x: 1290, y: 610, w: 310, h: 270 },
+  { id: 'fe', name: 'Frontend', color: 'var(--s1)', x: 150, y: 520, w: 270, h: 230 },
+  { id: 'api', name: 'API & realtime', color: 'var(--s4)', x: 440, y: 20, w: 270, h: 470 },
+  { id: 'ai', name: 'AI editor', color: 'var(--s6)', x: 740, y: 20, w: 540, h: 470 },
+  { id: 'ing', name: 'Ingest & render', color: 'var(--s2)', x: 440, y: 520, w: 840, h: 360 },
+  { id: 'mod', name: 'Models', color: 'var(--s5)', x: 1310, y: 20, w: 290, h: 560 },
+  { id: 'data', name: 'Data', color: 'var(--s3)', x: 1310, y: 610, w: 290, h: 270 },
 ];
-const W = 210, H = 62;
+const W = 230, H = 62;
+const ICON = {"cdn": "cloudfront", "cog": "cognito", "http": "apigw", "apifn": "lambda", "ev": "appsync", "broker": "lambda", "bma": "bedrock", "acr": "bedrock", "tapi": "apigw", "tools": "lambda", "strands": "lambda", "eb": "eventbridge", "coord": "lambda", "worker": "fargate", "mw": "lambda", "gen": "sagemaker", "render": "fargate", "peg": "bedrock", "mar": "bedrock", "oai": "bedrock", "tr": "transcribe", "oss": "sagemaker", "s3": "s3", "ddb": "dynamodb", "vec": "s3"};
 const N = {
   user:   { lane: null, x: 10, y: 60, t: 'Editors', s: 'browser' },
   cdn:    { lane: 'fe', x: 170, y: 570, t: 'CloudFront + S3', s: 'React · Cloudscape SPA' },
@@ -63,18 +64,18 @@ const N = {
   http:   { lane: 'api', x: 460, y: 70, t: 'API Gateway', s: 'HTTP API · Cognito JWT' },
   apifn:  { lane: 'api', x: 460, y: 190, t: 'API Lambda', s: 'archive · ACL · ops · renders' },
   ev:     { lane: 'api', x: 460, y: 390, t: 'AppSync Events', s: 'per-user live channels' },
-  broker: { lane: 'ai', x: 750, y: 190, t: 'Session broker', s: 'Lambda · one turn' },
-  bma:    { lane: 'ai', x: 1020, y: 70, t: 'Bedrock Managed Agents', s: 'OpenAI Codex harness' },
-  acr:    { lane: 'ai', x: 1020, y: 190, t: 'AgentCore Runtime', s: 'microVM · skills · MCP proxy' },
-  tapi:   { lane: 'ai', x: 1020, y: 300, t: 'Tools API', s: 'AWS_IAM · runtime role only' },
-  tools:  { lane: 'ai', x: 1020, y: 400, t: 'Agent tools', s: 'search · look · framing · edit' },
-  strands:{ lane: 'ai', x: 750, y: 300, t: 'Strands fallback', s: 'same tools · Bedrock Converse' },
+  broker: { lane: 'ai', x: 760, y: 190, t: 'Session broker', s: 'Lambda · one turn' },
+  bma:    { lane: 'ai', x: 1030, y: 70, t: 'Bedrock Managed Agents', s: 'OpenAI Codex harness' },
+  acr:    { lane: 'ai', x: 1030, y: 190, t: 'AgentCore Runtime', s: 'microVM · skills · MCP proxy' },
+  tapi:   { lane: 'ai', x: 1030, y: 300, t: 'Tools API', s: 'AWS_IAM · runtime role only' },
+  tools:  { lane: 'ai', x: 1030, y: 400, t: 'Agent tools', s: 'search · look · framing · edit' },
+  strands:{ lane: 'ai', x: 760, y: 300, t: 'Strands fallback', s: 'same tools · Converse' },
   eb:     { lane: 'ing', x: 460, y: 570, t: 'EventBridge → SQS', s: 'S3 Object Created' },
-  coord:  { lane: 'ing', x: 750, y: 570, t: 'Coordinator', s: 'Lambda · state in DynamoDB' },
-  worker: { lane: 'ing', x: 750, y: 690, t: 'Media worker', s: 'Fargate · ffmpeg · libass' },
-  mw:     { lane: 'ing', x: 1020, y: 570, t: 'Model workers', s: 'Lambda · poller' },
-  gen:    { lane: 'ing', x: 1020, y: 790, t: 'Generation (optional)', s: 'SageMaker async · scale to 0' },
-  render: { lane: 'ing', x: 460, y: 790, t: 'Renders & export', s: 'MP4 · SRT/VTT · OTIO/FCPXML' },
+  coord:  { lane: 'ing', x: 760, y: 570, t: 'Coordinator', s: 'Lambda · state in DynamoDB' },
+  worker: { lane: 'ing', x: 760, y: 690, t: 'Media worker', s: 'Fargate · ffmpeg · libass' },
+  mw:     { lane: 'ing', x: 1030, y: 570, t: 'Model workers', s: 'Lambda · poller' },
+  gen:    { lane: 'ing', x: 1030, y: 790, t: 'Generation (optional)', s: 'SageMaker async · scale to 0' },
+  render: { lane: 'ing', x: 460, y: 790, t: 'Renders & export', s: 'MP4 · SRT · OTIO · FCPXML' },
   peg:    { lane: 'mod', x: 1340, y: 70, t: 'Pegasus 1.5', s: 'video understanding' },
   mar:    { lane: 'mod', x: 1340, y: 170, t: 'Marengo 3.0', s: 'multimodal embeddings' },
   oai:    { lane: 'mod', x: 1340, y: 270, t: 'OpenAI on Bedrock', s: 'agent · vision · framing' },
@@ -137,8 +138,8 @@ for (const [id, n] of Object.entries(N)) {
   const lane = LANES.find((l) => l.id === n.lane);
   const g = el('g', {});
   if (id === 'user') {
-    el('circle', { cx: n.x + 50, cy: n.y + 10, r: 14, fill: 'none', stroke: 'var(--text-secondary)', 'stroke-width': 2 }, g);
-    el('path', { d: `M${n.x + 24},${n.y + 52} q26,-30 52,0`, fill: 'none', stroke: 'var(--text-secondary)', 'stroke-width': 2 }, g);
+    el('rect', { x: n.x + 22, y: n.y - 6, width: 56, height: 56, rx: 10, fill: '#ffffff', stroke: 'var(--border)' }, g);
+    el('image', { href: 'icons/users.png', x: n.x + 26, y: n.y - 2, width: 48, height: 48 }, g);
     const t = el('text', { x: n.x + 50, y: n.y + 76, 'text-anchor': 'middle', class: 'node-title' }, g); t.textContent = n.t;
     const s = el('text', { x: n.x + 50, y: n.y + 94, 'text-anchor': 'middle', class: 'node-sub' }, g); s.textContent = n.s;
     N.user = { ...n, x: n.x, y: n.y };
@@ -146,8 +147,10 @@ for (const [id, n] of Object.entries(N)) {
   }
   el('rect', { x: n.x, y: n.y, width: W, height: H, rx: 8, fill: 'var(--surface-1)', stroke: 'var(--border)' }, g);
   el('rect', { x: n.x, y: n.y + 8, width: 4, height: H - 16, rx: 2, fill: lane.color }, g);
-  const t = el('text', { x: n.x + 16, y: n.y + 26, class: 'node-title' }, g); t.textContent = n.t;
-  const s = el('text', { x: n.x + 16, y: n.y + 46, class: 'node-sub' }, g); s.textContent = n.s;
+  // Official AWS Architecture Icons (docs/architecture/icons)
+  el('image', { href: `icons/${ICON[id]}.png`, x: n.x + 12, y: n.y + 11, width: 40, height: 40 }, g);
+  const t = el('text', { x: n.x + 62, y: n.y + 26, class: 'node-title' }, g); t.textContent = n.t;
+  const s = el('text', { x: n.x + 62, y: n.y + 46, class: 'node-sub' }, g); s.textContent = n.s;
 }
 // user node ports: treat as a 100x100 box
 
