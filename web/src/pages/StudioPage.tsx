@@ -157,7 +157,10 @@ export default function StudioPage() {
             onConfirm={(a) => { setPicked(a); setShowPicker(false); }} />
           {recent.length > 0 && (
             <SpaceBetween size="xxs">
-              <Box variant="awsui-key-label">{t('recentProjects')}</Box>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <Box variant="awsui-key-label">{t('recentProjects')}</Box>
+                <Link onFollow={(e) => { e.preventDefault(); navigate('/projects'); }}>{t('allProjects')} →</Link>
+              </div>
               {recent.map((p) => (
                 <Box key={p.projectId} variant="small">
                   <Link onFollow={(e) => { e.preventDefault(); navigate(`/studio/${p.projectId}`); }}>{p.title}</Link>

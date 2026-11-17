@@ -294,3 +294,24 @@ def contains_real_person(image: bytes) -> dict:
         return json.loads(text[text.find("{"): text.rfind("}") + 1])
     except ValueError:
         return {"identifiable_real_person": True, "reason": "unparseable safety verdict (fail closed)"}
+
+
+MEMORY_PROMPT = """You maintain the long-term memory of a video-editing project between an editor (user) and an AI.
+Update the memory with the new conversation below. Keep: the goal and audience, the decisions made (format, length,
+style, music, captions, chosen clips), the user's preferences and dislikes, what was tried and rejected, and open
+requests. Drop chit-chat and anything superseded. Max ~250 words, bullet points, in {language}.
+
+Current memory:
+{memory}
+
+New conversation:
+{conversation}
+
+Reply with the updated memory only."""
+
+
+def update_memory(memory: str, conversation: str, language: str = "English") -> str:
+    resp = runtime().converse(modelId=get_config().vision_model_id, messages=[{"role": "user", "content": [
+        {"text": MEMORY_PROMPT.format(memory=memory or "(empty)", conversation=conversation[:30000], language=language)}]}],
+        inferenceConfig={"maxTokens": 1024})
+    return "".join(c.get("text", "") for c in resp["output"]["message"]["content"]).strip()[:4000]

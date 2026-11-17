@@ -1,7 +1,7 @@
 import { accessToken } from '../auth';
 import { getConfig } from '../config';
 import type { Timeline } from '@shorts/timeline';
-import type { GenJob, Recipe, Skill, BrandKit, BatchInfo, RenderInfo, ChatMessage, ChatWidgetHistory, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
+import type { GenJob, Recipe, Skill, BrandKit, BatchInfo, RenderInfo, ChatMessage, ChatWidgetHistory, Folder, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -63,6 +63,11 @@ export const api = {
   addGroupMember: (gid: string, sub: string) => call<void>('POST', `/groups/${gid}/members`, { sub }),
   removeGroupMember: (gid: string, sub: string) => call<void>('DELETE', `/groups/${gid}/members/${sub}`),
   projects: () => call<ProjectSummary[]>('GET', '/projects'),
+  folders: () => call<Folder[]>('GET', '/folders'),
+  createFolder: (b: { name: string; parentId?: string | null }) => call<Folder>('POST', '/folders', b),
+  updateFolder: (id: string, b: { name?: string; parentId?: string | null; color?: string }) => call<Folder>('PATCH', `/folders/${id}`, b),
+  deleteFolder: (id: string) => call<{ ok: boolean }>('DELETE', `/folders/${id}`),
+  duplicateProject: (id: string, b: { title?: string; version?: number } = {}) => call<{ projectId: string }>('POST', `/projects/${id}/duplicate`, b),
   createProject: (b: { title?: string; aspect?: string; synopsis?: string; assetIds?: string[]; recipe?: string; lengthSec?: number; captions?: string; music?: boolean; brandKitId?: string }) =>
     call<{ projectId: string; currentVersion: number }>('POST', '/projects', b),
   project: (id: string, version?: number) =>

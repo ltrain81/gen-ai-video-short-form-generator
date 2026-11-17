@@ -124,11 +124,13 @@ def save(p: Principal, project: dict, timeline: dict, base_version: int, author:
     _validate(p, timeline, project["projectId"])
     new_version = base_version + 1
     _write_snapshot(project["tenantId"], project["projectId"], new_version, timeline)
+    cover, dur = summary_of(timeline)
     try:
         updated = ddb.update_raw(
-            f"PROJ#{project['projectId']}", "META", "SET currentVersion = :n, updatedAt = :now, GSI2SK = :g",
+            f"PROJ#{project['projectId']}", "META",
+            "SET currentVersion = :n, updatedAt = :now, GSI2SK = :g, coverAssetId = :c, coverAt = :ca, durationSec = :d",
             values={":n": new_version, ":base": base_version, ":now": ddb.now_ms(),
-                    ":g": f"PROJ#{ddb.now_ms()}#{project['projectId']}"},
+                    ":g": f"PROJ#{ddb.now_ms()}#{project['projectId']}", ":c": cover[0] or "", ":ca": cover[1], ":d": dur},
             condition="currentVersion = :base",
         )
     except Exception as exc:
@@ -177,14 +179,90 @@ def _validate(p: Principal, timeline: dict, project_id: str) -> None:
             raise Forbidden(f"No access to assets: {', '.join(sorted(denied)[:5])}")
 
 
+def summary_of(timeline: dict) -> tuple[tuple[str | None, float], float]:
+    """(cover asset + source time of the first main clip, duration) — shown on project cards."""
+    from . import timeline_ops
+    main = next((t for t in timeline.get("tracks", []) if t.get("kind") == "video"), {"items": []})
+    first = next((i for i in main["items"] if i.get("type") == "clip"), None)
+    cover = (first["assetId"], round(float(first.get("srcIn", 0)) + min(1.0, float(first.get("duration", 0)) / 3), 2)) if first else (None, 0.0)
+    return cover, round(timeline_ops.duration(timeline), 2)
+
+
+LIST_FIELDS = ("projectId", "title", "aspect", "currentVersion", "createdAt", "updatedAt", "ownerId", "synopsis",
+               "assetIds", "folderId", "starred", "archived", "batchId", "recipe", "durationSec", "coverAssetId",
+               "coverAt", "lastMessage", "lastMessageAt", "duplicatedFrom")
+
+
 def list_for(p: Principal) -> list[dict]:
     out = []
     for proj in ddb.query(f"TENANT#{p.tenant_id}", "PROJ#", index="GSI2", forward=False):
         role = project_role(p, proj)
         if role:
-            out.append({k: proj.get(k) for k in ("projectId", "title", "aspect", "currentVersion", "createdAt",
-                                                   "updatedAt", "ownerId", "synopsis", "assetIds")} | {"role": role})
+            out.append({k: proj.get(k) for k in LIST_FIELDS} | {"role": role})
     return out
+
+
+def duplicate(p: Principal, project: dict, title: str | None = None, version: int | None = None) -> dict:
+    """A new project starting from (any version of) this one — e.g. a 16:9 cut, an A/B alternative."""
+    tl = load_timeline(project, version)
+    new = create(p, (title or f"{project.get('title', 'Untitled')} (copy)")[:200], tl["settings"].get("aspect", "9:16"),
+                 project.get("synopsis", ""), [a for a in project.get("assetIds", [])])
+    tl = {**tl, "projectId": new["projectId"], "pins": []}
+    _write_snapshot(p.tenant_id, new["projectId"], 1, tl)
+    cover, dur = summary_of(tl)
+    ddb.update(f"PROJ#{new['projectId']}", "META", {
+        "currentVersion": 1, "folderId": project.get("folderId"), "duplicatedFrom": {
+            "projectId": project["projectId"], "version": version or project.get("currentVersion")},
+        "coverAssetId": cover[0], "coverAt": cover[1], "durationSec": dur,
+        **{k: project[k] for k in ("recipe", "recipeParams", "brandKitId") if project.get(k)}})
+    ddb.put({"PK": f"PROJ#{new['projectId']}", "SK": f"VER#{1:06d}", "version": 1, "author": "user", "actor": p.sub,
+             "message": f"duplicated from {project.get('title', '')} v{version or project.get('currentVersion')}",
+             "createdAt": ddb.now_ms()})
+    return {"projectId": new["projectId"]}
+
+
+# ------------------------------------------------------------------ folders (workspace-wide, nestable)
+def folders(tenant_id: str) -> list[dict]:
+    return [{k: f.get(k) for k in ("folderId", "name", "parentId", "ownerId", "createdAt", "color")}
+            for f in ddb.query(f"TENANT#{tenant_id}", "FOLDER#")]
+
+
+def save_folder(p: Principal, body: dict, folder_id: str | None = None) -> dict:
+    fid = folder_id or "f" + uuid.uuid4().hex[:12]
+    existing = ddb.get(f"TENANT#{p.tenant_id}", f"FOLDER#{fid}") if folder_id else None
+    if folder_id and not existing:
+        raise ValueError("Unknown folder")
+    parent = body.get("parentId", (existing or {}).get("parentId"))
+    if parent:
+        all_ = {f["folderId"]: f for f in folders(p.tenant_id)}
+        if parent not in all_:
+            raise ValueError("Unknown parent folder")
+        cur = parent
+        while cur:  # no cycles
+            if cur == fid:
+                raise ValueError("A folder cannot be moved into itself")
+            cur = all_.get(cur, {}).get("parentId")
+    item = {"PK": f"TENANT#{p.tenant_id}", "SK": f"FOLDER#{fid}", "folderId": fid,
+            "name": str(body.get("name", (existing or {}).get("name", "New folder")))[:80],
+            "parentId": parent or None, "color": body.get("color", (existing or {}).get("color")),
+            "ownerId": (existing or {}).get("ownerId", p.sub), "createdAt": (existing or {}).get("createdAt", ddb.now_ms())}
+    ddb.put(item)
+    return {k: item[k] for k in ("folderId", "name", "parentId", "color", "ownerId", "createdAt")}
+
+
+def delete_folder(p: Principal, folder_id: str) -> None:
+    """Contents move up to the parent folder (nothing is deleted)."""
+    f = ddb.get(f"TENANT#{p.tenant_id}", f"FOLDER#{folder_id}")
+    if not f:
+        return
+    parent = f.get("parentId")
+    for sub in folders(p.tenant_id):
+        if sub.get("parentId") == folder_id:
+            ddb.update(f"TENANT#{p.tenant_id}", f"FOLDER#{sub['folderId']}", {"parentId": parent})
+    for proj in ddb.query(f"TENANT#{p.tenant_id}", "PROJ#", index="GSI2"):
+        if proj.get("folderId") == folder_id:
+            ddb.update(f"PROJ#{proj['projectId']}", "META", {"folderId": parent})
+    ddb.delete(f"TENANT#{p.tenant_id}", f"FOLDER#{folder_id}")
 
 
 def versions(project_id: str) -> list[dict]:

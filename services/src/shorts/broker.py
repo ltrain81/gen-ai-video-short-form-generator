@@ -161,14 +161,40 @@ def agent_settings(project: dict) -> tuple[str, str]:
     return model, effort
 
 
-def recap(project_id: str, limit: int = 12) -> str:
-    """Short transcript for a fresh session (old sessions expire on the service side)."""
-    msgs = messages(project_id, limit=limit)[:-1]  # the current user message is sent separately
+RECENT_VERBATIM = 8
+
+
+def recap(project_id: str, limit: int = RECENT_VERBATIM) -> str:
+    """Context for a fresh session (old sessions expire on the service side): a rolling memory of the whole
+    conversation (decisions, preferences, rejected ideas), the latest messages verbatim and the edit history."""
+    msgs = messages(project_id, limit=400)[:-1]  # the current user message is sent separately
     if not msgs:
         return ""
-    lines = [f"{m['role']}: {(m.get('text') or '').strip()[:400]}" for m in msgs if (m.get("text") or "").strip()]
-    return ("\n[Earlier in this project's chat (your previous session ended; continue from here):\n"
-            + "\n".join(lines[-limit:]) + "\n]")
+    older, recent = msgs[:-limit], msgs[-limit:]
+    project = ddb.get(f"PROJ#{project_id}", "META") or {}
+    mem = project.get("memory") or {}
+    upto = int(mem.get("upTo") or 0)
+    new_older = [m for m in older if int(m.get("createdAt") or 0) > upto]
+    text = mem.get("text") or ""
+    if new_older:
+        try:
+            from . import models
+            lang = ingest.LANGUAGES.get((ddb.get(f"TENANT#{project.get('tenantId')}", "META") or {}).get("language", ingest.DEFAULT_LANGUAGE), "Korean")
+            convo = "\n".join(f"{m['role']}: {(m.get('text') or '').strip()[:1500]}" for m in new_older if (m.get("text") or "").strip())
+            text = models.update_memory(text, convo, lang)
+            ddb.update(f"PROJ#{project_id}", "META", {"memory": {"text": text, "upTo": int(new_older[-1]["createdAt"])}})
+        except Exception:  # noqa: BLE001 - memory is a bonus; the verbatim tail still goes in
+            log.warning("Updating project memory failed", exc_info=True)
+    versions_ = [v for v in projects.versions(project_id)[:15] if v.get("message")]
+    parts = ["\n[Your previous session for this project ended. Continue seamlessly from here."]
+    if text:
+        parts.append("Project memory (summary of the whole conversation so far):\n" + text)
+    if versions_:
+        parts.append("Recent edit history (newest first): " + "; ".join(
+            f"v{v['version']} {v.get('author')}: {v['message'][:80]}" for v in versions_))
+    parts.append("Latest messages:\n" + "\n".join(f"{m['role']}: {(m.get('text') or '').strip()[:600]}"
+                                                    for m in recent if (m.get("text") or "").strip()))
+    return "\n".join(parts) + "\n]"
 
 
 SESSION_MAX_AGE_SEC = 7 * 3600  # AgentCore compute lifetime is 8 h; start fresh before it expires
@@ -375,6 +401,8 @@ def run_turn(event: dict) -> None:
         relay.flush()
         save_message(project_id, "assistant", relay.text, tools=relay.tools or None, steps=relay.steps or None,
                      model=relay.model, effort=relay.effort, error=error, turn=turn)
+        if relay.text.strip():
+            ddb.update(f"PROJ#{project_id}", "META", {"lastMessage": relay.text.strip()[:200], "lastMessageAt": ddb.now_ms()})
         agent = (ddb.get(f"PROJ#{project_id}", "META") or {}).get("agent") or {}
         if agent.get("environmentId"):
             projects.release_lock(project_id, f"agent:{agent['environmentId']}")

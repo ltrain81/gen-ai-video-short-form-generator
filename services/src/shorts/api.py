@@ -10,9 +10,13 @@ from datetime import datetime, timezone
 
 import boto3
 
+import logging
+
 from . import acl, broker, ddb, ingest, projects, recipes, search, steps, storage, timeline_ops, ui_widgets
 from .auth import Forbidden, Principal
 from .config import get_config
+
+log = logging.getLogger(__name__)
 from .http import BadRequest, Conflict, NotFound, Request, Router
 
 router = Router()
@@ -684,7 +688,59 @@ def delete_brand_kit(req: Request):
 # ================================================================== projects / timelines
 @router.route("GET", "/projects")
 def list_projects(req: Request):
-    return projects.list_for(req.principal)
+    items = projects.list_for(req.principal)
+    # Projects saved before covers existed: compute once (a few per request) and store.
+    todo = [i for i in items if i.get("coverAssetId") is None and int(i.get("currentVersion") or 0) > 0][:12]
+    for i in todo:
+        try:
+            proj = ddb.get(f"PROJ#{i['projectId']}", "META")
+            cover, dur = projects.summary_of(projects.load_timeline(proj))
+            ddb.update(f"PROJ#{i['projectId']}", "META", {"coverAssetId": cover[0] or "", "coverAt": cover[1], "durationSec": dur})
+            i.update(coverAssetId=cover[0] or "", coverAt=cover[1], durationSec=dur)
+        except Exception:  # noqa: BLE001 - a missing snapshot should not break the list
+            log.warning("cover backfill failed for %s", i["projectId"], exc_info=True)
+    covers = {i["coverAssetId"] for i in items if i.get("coverAssetId")}
+    thumbs = {a["assetId"]: a.get("thumbnailKey") for a in ddb.batch_get((f"ASSET#{c}", "META") for c in covers)} if covers else {}
+    for i in items:
+        key = thumbs.get(i.get("coverAssetId") or "")
+        i["coverUrl"] = storage.presign_get(key, 3600) if key else None
+    return items
+
+
+@router.route("GET", "/folders")
+def list_folders(req: Request):
+    return projects.folders(req.principal.tenant_id)
+
+
+@router.route("POST", "/folders")
+def create_folder(req: Request):
+    try:
+        return projects.save_folder(req.principal, req.body)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+@router.route("PATCH", "/folders/{folderId}")
+def update_folder(req: Request):
+    try:
+        return projects.save_folder(req.principal, req.body, req.params["folderId"])
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+@router.route("DELETE", "/folders/{folderId}")
+def remove_folder(req: Request):
+    projects.delete_folder(req.principal, req.params["folderId"])
+    return {"ok": True}
+
+
+@router.route("POST", "/projects/{projectId}/duplicate")
+def duplicate_project(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    v = req.body.get("version")
+    out = projects.duplicate(req.principal, project, req.body.get("title"), int(v) if v is not None else None)
+    audit(req.principal, "project.duplicate", f"PROJ#{project['projectId']}", out)
+    return out
 
 
 @router.route("POST", "/projects")
@@ -717,7 +773,8 @@ def get_project(req: Request):
     version = int(req.query["version"]) if req.query.get("version") else None
     return {"project": {k: project.get(k) for k in ("projectId", "title", "aspect", "synopsis", "currentVersion",
                                                       "createdAt", "updatedAt", "ownerId", "assetIds", "agentModel",
-                                                      "agentEffort", "orchestrator")},
+                                                      "agentEffort", "orchestrator", "folderId", "batchId",
+                                                      "duplicatedFrom", "starred")},
             "role": role, "lock": projects.lock_state(project), "timeline": projects.load_timeline(project, version)}
 
 
@@ -733,6 +790,14 @@ def agent_models(req: Request):
 def update_project(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
     fields = {k: str(v)[:4000] for k, v in req.body.items() if k in {"title", "synopsis"}}
+    for k in ("starred", "archived"):
+        if k in req.body:
+            fields[k] = bool(req.body[k])
+    if "folderId" in req.body:
+        fid = req.body["folderId"]
+        if fid and not ddb.get(f"TENANT#{req.principal.tenant_id}", f"FOLDER#{fid}"):
+            raise BadRequest("Unknown folder")
+        fields["folderId"] = fid or None
     if "orchestrator" in req.body:
         if req.body["orchestrator"] not in {"bma", "strands"}:
             raise BadRequest("orchestrator must be bma or strands")
@@ -746,7 +811,7 @@ def update_project(req: Request):
             raise BadRequest(f"agentEffort must be one of {list(steps.EFFORTS)}")
         fields["agentEffort"] = req.body["agentEffort"]
     if not fields:
-        raise BadRequest("Editable fields: title, synopsis, orchestrator, agentModel, agentEffort")
+        raise BadRequest("Editable fields: title, synopsis, folderId, starred, archived, orchestrator, agentModel, agentEffort")
     ddb.update(f"PROJ#{project['projectId']}", "META", {**fields, "updatedAt": ddb.now_ms()})
     return {"ok": True}
 

@@ -13,6 +13,7 @@ import type { Me } from './api/types';
 import { useAuth } from './auth';
 import { useI18n } from './i18n';
 import AdminPage from './pages/AdminPage';
+import ProjectsPage from './pages/ProjectsPage';
 import ArchivePage from './pages/ArchivePage';
 import AssetPage from './pages/AssetPage';
 import LoginPage from './pages/LoginPage';
@@ -49,7 +50,7 @@ export default function App() {
     else setMe(null);
   }, [user, notify]);
 
-  const studio = location.pathname === '/' || location.pathname.startsWith('/studio/');
+  const studio = location.pathname === '/' || location.pathname.startsWith('/studio/') || location.pathname === '/projects';
   // Navigation: collapsed by default on the chat-first studio and the editor (more canvas), open elsewhere;
   // always toggleable with the hamburger button. (Hooks must run before the early returns below.)
   const [navOpen, setNavOpen] = useState(!studio);
@@ -103,6 +104,7 @@ export default function App() {
               onFollow={(e) => { e.preventDefault(); navigate(e.detail.href); if (studio) setNavOpen(false); }}
               items={[
                 { type: 'link', text: t('navStudio'), href: '/' },
+                { type: 'link', text: t('navProjects'), href: '/projects' },
                 { type: 'link', text: t('navArchive'), href: '/archive' },
                 { type: 'link', text: t('navLibrary'), href: '/library' },
                 ...(me?.tenantRole === 'admin' ? [{ type: 'link' as const, text: t('navAdmin'), href: '/admin' }] : []),
@@ -114,6 +116,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<StudioPage />} />
               <Route path="/studio/:projectId" element={<ProjectPage />} />
+              <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/archive" element={<ArchivePage />} />
               <Route path="/library" element={<LibraryPage />} />
               <Route path="/batches/:batchId" element={<BatchPage />} />

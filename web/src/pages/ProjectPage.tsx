@@ -104,6 +104,17 @@ export default function ProjectPage() {
   const undoStack = useRef<number[]>([]);
   const redoStack = useRef<number[]>([]);
   const [playing, setPlaying] = useState(false);
+  const [folderPath, setFolderPath] = useState<{ folderId: string; name: string }[]>([]);
+  useEffect(() => {
+    const fid = (project as { folderId?: string | null } | null)?.folderId;
+    if (!fid) { setFolderPath([]); return; }
+    api.folders().then((fs) => {
+      const out: { folderId: string; name: string }[] = [];
+      let cur = fs.find((f) => f.folderId === fid);
+      while (cur) { out.unshift(cur); cur = fs.find((f) => f.folderId === cur!.parentId); }
+      setFolderPath(out);
+    }).catch(() => undefined);
+  }, [(project as { folderId?: string | null } | null)?.folderId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [hoverItem, setHoverItem] = useState<string | undefined>();
   const [helpOpen, setHelpOpen] = useState(false);
   const [pending, setPending] = useState<Record<string, { name: string; status: string; pct: number }>>({});
@@ -464,8 +475,8 @@ export default function ProjectPage() {
       <section className="studio-canvas-pane">
         <div className="studio-toolbar" style={{ borderBottom: divider }}>
           <SpaceBetween direction="horizontal" size="s" alignItems="center">
-            <BreadcrumbGroup items={[{ text: t('navStudio'), href: '/' }, { text: project.title, href: '#' }]}
-              onFollow={(e) => { e.preventDefault(); if (e.detail.href === '/') navigate('/'); }} ariaLabel="breadcrumbs" />
+            <BreadcrumbGroup items={[{ text: t('navProjects'), href: '/projects' }, ...folderPath.map((f) => ({ text: f.name, href: '/projects' })), { text: project.title, href: '#' }]}
+              onFollow={(e) => { e.preventDefault(); if (e.detail.href !== '#') navigate(e.detail.href); }} ariaLabel="breadcrumbs" />
           </SpaceBetween>
           <SpaceBetween direction="horizontal" size="xs" alignItems="center">
             <SegmentedControl selectedId={mode} onChange={(e) => setMode(e.detail.selectedId as 'ai' | 'manual')}
