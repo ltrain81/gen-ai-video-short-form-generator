@@ -42,61 +42,66 @@
   <h1>AWS Shorts V2 — AI Video Editor</h1>
   <p class="sub">Chat with an AI editor or edit by hand on the same timeline · archive search · render · NLE export · optional generation</p>
   <div class="legend" id="legend"></div>
-  <svg id="d" width="1616" height="900" viewBox="0 0 1616 900" role="img" aria-label="Architecture diagram"></svg>
-  <p class="note">Every REST call carries a verified Cognito JWT with per-action ACL; the tools API accepts only the AgentCore Runtime role plus a live
+  <svg id="d" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-label="Architecture diagram"></svg>
+  <p class="note">Uploads go browser → S3 media via presigned multipart URLs; the API and workers keep state in DynamoDB. Every REST call carries a verified Cognito JWT with per-action ACL; the tools API accepts only the AgentCore Runtime role plus a live
   session binding (BMA environment id → user, project). Media is private; browsers receive short-lived presigned URLs after the ACL check.</p>
 </div>
 <script>
+// Grid: columns A (users/frontend) · B (API) · C+D (AI editor) · E (models); ingest + data below.
 const LANES = [
-  { id: 'fe', name: 'Frontend', color: 'var(--s1)', x: 150, y: 520, w: 270, h: 230 },
-  { id: 'api', name: 'API & realtime', color: 'var(--s4)', x: 440, y: 20, w: 270, h: 470 },
-  { id: 'ai', name: 'AI editor', color: 'var(--s6)', x: 740, y: 20, w: 540, h: 470 },
-  { id: 'ing', name: 'Ingest & render', color: 'var(--s2)', x: 440, y: 520, w: 840, h: 360 },
-  { id: 'mod', name: 'Models', color: 'var(--s5)', x: 1310, y: 20, w: 290, h: 560 },
-  { id: 'data', name: 'Data', color: 'var(--s3)', x: 1310, y: 610, w: 290, h: 270 },
+  { id: 'fe', name: 'Frontend', color: 'var(--s1)', x: 20, y: 290, w: 270, h: 230 },
+  { id: 'api', name: 'API & realtime', color: 'var(--s4)', x: 320, y: 20, w: 270, h: 380 },
+  { id: 'ai', name: 'AI editor', color: 'var(--s6)', x: 620, y: 20, w: 590, h: 500 },
+  { id: 'mod', name: 'Models', color: 'var(--s5)', x: 1250, y: 20, w: 330, h: 620 },
+  { id: 'ing', name: 'Ingest & render', color: 'var(--s2)', x: 320, y: 550, w: 890, h: 270 },
+  { id: 'data', name: 'Data', color: 'var(--s3)', x: 320, y: 850, w: 1260, h: 130 },
 ];
 const W = 230, H = 62;
-const ICON = {"cdn": "cloudfront", "cog": "cognito", "http": "apigw", "apifn": "lambda", "ev": "appsync", "broker": "lambda", "bma": "bedrock", "acr": "bedrock", "tapi": "apigw", "tools": "lambda", "strands": "lambda", "eb": "eventbridge", "coord": "lambda", "worker": "fargate", "mw": "lambda", "gen": "sagemaker", "render": "fargate", "peg": "bedrock", "mar": "bedrock", "oai": "bedrock", "tr": "transcribe", "oss": "sagemaker", "s3": "s3", "ddb": "dynamodb", "vec": "s3"};
+const ICON = { cdn: 'cloudfront', cog: 'cognito', http: 'apigw', apifn: 'lambda', ev: 'appsync', broker: 'lambda', bma: 'bedrock',
+  acr: 'bedrock', tapi: 'apigw', tools: 'lambda', strands: 'lambda', eb: 'eventbridge', coord: 'lambda', worker: 'fargate',
+  mw: 'lambda', gen: 'sagemaker', render: 'fargate', peg: 'bedrock', mar: 'bedrock', oai: 'bedrock', tr: 'transcribe',
+  oss: 'sagemaker', s3: 's3', ddb: 'dynamodb', vec: 's3' };
 const N = {
-  user:   { lane: null, x: 10, y: 60, t: 'Editors', s: 'browser' },
-  cdn:    { lane: 'fe', x: 170, y: 570, t: 'CloudFront + S3', s: 'React · Cloudscape SPA' },
-  cog:    { lane: 'fe', x: 170, y: 670, t: 'Amazon Cognito', s: 'users · OIDC/SAML' },
-  http:   { lane: 'api', x: 460, y: 70, t: 'API Gateway', s: 'HTTP API · Cognito JWT' },
-  apifn:  { lane: 'api', x: 460, y: 190, t: 'API Lambda', s: 'archive · ACL · ops · renders' },
-  ev:     { lane: 'api', x: 460, y: 390, t: 'AppSync Events', s: 'per-user live channels' },
-  broker: { lane: 'ai', x: 760, y: 190, t: 'Session broker', s: 'Lambda · one turn' },
-  bma:    { lane: 'ai', x: 1030, y: 70, t: 'Bedrock Managed Agents', s: 'OpenAI Codex harness' },
-  acr:    { lane: 'ai', x: 1030, y: 190, t: 'AgentCore Runtime', s: 'microVM · skills · MCP proxy' },
-  tapi:   { lane: 'ai', x: 1030, y: 300, t: 'Tools API', s: 'AWS_IAM · runtime role only' },
-  tools:  { lane: 'ai', x: 1030, y: 400, t: 'Agent tools', s: 'search · look · framing · edit' },
-  strands:{ lane: 'ai', x: 760, y: 300, t: 'Strands fallback', s: 'same tools · Converse' },
-  eb:     { lane: 'ing', x: 460, y: 570, t: 'EventBridge → SQS', s: 'S3 Object Created' },
-  coord:  { lane: 'ing', x: 760, y: 570, t: 'Coordinator', s: 'Lambda · state in DynamoDB' },
-  worker: { lane: 'ing', x: 760, y: 690, t: 'Media worker', s: 'Fargate · ffmpeg · libass' },
-  mw:     { lane: 'ing', x: 1030, y: 570, t: 'Model workers', s: 'Lambda · poller' },
-  gen:    { lane: 'ing', x: 1030, y: 790, t: 'Generation (optional)', s: 'SageMaker async · scale to 0' },
-  render: { lane: 'ing', x: 460, y: 790, t: 'Renders & export', s: 'MP4 · SRT · OTIO · FCPXML' },
-  peg:    { lane: 'mod', x: 1340, y: 70, t: 'Pegasus 1.5', s: 'video understanding' },
-  mar:    { lane: 'mod', x: 1340, y: 170, t: 'Marengo 3.0', s: 'multimodal embeddings' },
-  oai:    { lane: 'mod', x: 1340, y: 270, t: 'OpenAI on Bedrock', s: 'agent · vision · framing' },
-  tr:     { lane: 'mod', x: 1340, y: 370, t: 'Amazon Transcribe', s: 'word timestamps' },
-  oss:    { lane: 'mod', x: 1340, y: 470, t: 'Open models', s: 'Z-Image · Qwen-Edit · Wan 2.2' },
-  s3:     { lane: 'data', x: 1340, y: 650, t: 'S3 media', s: 'originals · proxies · renders' },
-  ddb:    { lane: 'data', x: 1340, y: 735, t: 'DynamoDB', s: 'single table · ACL · timelines' },
-  vec:    { lane: 'data', x: 1340, y: 820, t: 'S3 Vectors', s: 'index per tenant' },
+  user:   { x: 105, y: 155, t: 'Editors', s: 'browser' },
+  cdn:    { lane: 'fe', x: 40, y: 340, t: 'CloudFront + S3', s: 'React · Cloudscape SPA' },
+  cog:    { lane: 'fe', x: 40, y: 440, t: 'Amazon Cognito', s: 'users · OIDC/SAML' },
+  ev:     { lane: 'api', x: 340, y: 60, t: 'AppSync Events', s: 'per-user live channels' },
+  http:   { lane: 'api', x: 340, y: 180, t: 'API Gateway', s: 'HTTP API · Cognito JWT' },
+  apifn:  { lane: 'api', x: 340, y: 300, t: 'API Lambda', s: 'archive · ACL · ops · renders' },
+  broker: { lane: 'ai', x: 640, y: 300, t: 'Session broker', s: 'Lambda · one turn' },
+  strands:{ lane: 'ai', x: 640, y: 420, t: 'Strands fallback', s: 'same tools · Converse' },
+  bma:    { lane: 'ai', x: 960, y: 60, t: 'Bedrock Managed Agents', s: 'OpenAI Codex harness' },
+  acr:    { lane: 'ai', x: 960, y: 180, t: 'AgentCore Runtime', s: 'microVM · skills · MCP' },
+  tapi:   { lane: 'ai', x: 960, y: 300, t: 'Tools API', s: 'AWS_IAM · runtime role only' },
+  tools:  { lane: 'ai', x: 960, y: 420, t: 'Agent tools', s: 'search · look · framing · edit' },
+  oai:    { lane: 'mod', x: 1300, y: 60, t: 'OpenAI on Bedrock', s: 'agent · vision · framing' },
+  mar:    { lane: 'mod', x: 1300, y: 180, t: 'Marengo 3.0', s: 'multimodal embeddings' },
+  peg:    { lane: 'mod', x: 1300, y: 300, t: 'Pegasus 1.5', s: 'video understanding' },
+  tr:     { lane: 'mod', x: 1300, y: 420, t: 'Amazon Transcribe', s: 'word timestamps' },
+  oss:    { lane: 'mod', x: 1300, y: 540, t: 'Open models', s: 'Z-Image · Qwen-Edit · Wan 2.2' },
+  eb:     { lane: 'ing', x: 340, y: 600, t: 'EventBridge → SQS', s: 'S3 Object Created' },
+  coord:  { lane: 'ing', x: 640, y: 600, t: 'Coordinator', s: 'Lambda · state in DynamoDB' },
+  gen:    { lane: 'ing', x: 960, y: 600, t: 'Generation (optional)', s: 'SageMaker async · scale to 0' },
+  worker: { lane: 'ing', x: 640, y: 730, t: 'Media worker', s: 'Fargate · ingest · render' },
+  mw:     { lane: 'ing', x: 960, y: 730, t: 'Model workers', s: 'Lambda · poller' },
+  s3:     { lane: 'data', x: 340, y: 895, t: 'S3 media', s: 'originals · proxies · renders' },
+  ddb:    { lane: 'data', x: 1300, y: 895, t: 'DynamoDB', s: 'single table · ACL · timelines' },
+  vec:    { lane: 'data', x: 960, y: 895, t: 'S3 Vectors', s: 'index per tenant' },
 };
 // [from, to, label, dashed, fromSide, toSide]
 const E = [
-  ['user', 'cdn', 'app', false, 'b', 'l'], ['user', 'cog', 'sign-in', true, 'b', 'l'], ['user', 'http', 'REST · chat', false],
-  ['http', 'apifn', '', false, 'b', 't'], ['ev', 'user', 'live events', true, 'l', 'r'],
-  ['apifn', 'broker', 'chat turn', false], ['broker', 'bma', '', false], ['bma', 'acr', '', false, 'b', 't'],
+  ['user', 'http', 'REST · chat', false, 'r', 'l'], ['user', 'cdn', 'app', false, 'b', 't'],
+  ['cdn', 'cog', 'sign-in', true, 'b', 't'], ['ev', 'user', 'live events', true, 'l', 't'],
+  ['http', 'apifn', '', false, 'b', 't'], ['apifn', 'broker', 'chat turn', false, 'r', 'l'],
+  ['broker', 'strands', 'fallback', true, 'b', 't'], ['broker', 'ev', 'stream', true, 't', 'r'],
+  ['broker', 'bma', '', false, 'r', 'l'], ['bma', 'acr', '', false, 'b', 't'],
   ['acr', 'tapi', 'SigV4 + binding', false, 'b', 't'], ['tapi', 'tools', '', false, 'b', 't'],
-  ['broker', 'strands', 'fallback', true, 'b', 't'], ['broker', 'ev', '', true, 'b', 'r'],
-  ['tools', 'oai', '', false], ['tools', 'mar', '', false], ['bma', 'oai', '', false],
-  ['s3', 'eb', 'upload', false, 'l', 'b'], ['eb', 'coord', '', false], ['coord', 'worker', 'prepare · render', false, 'b', 't'],
-  ['coord', 'mw', '', false], ['mw', 'peg', '', false], ['mw', 'tr', '', false], ['mw', 'vec', '', false, 'r', 'l'],
-  ['worker', 's3', '', false, 'r', 'l'], ['worker', 'render', '', false, 'l', 'r'], ['tools', 'gen', 'generate (confirmed)', true, 'b', 't'],
-  ['gen', 'oss', '', true, 'r', 'l'],
+  ['bma', 'oai', '', false, 'r', 'l'], ['tools', 'oai', '', false, 'r', 'l'], ['tools', 'mar', '', false, 'r', 'l'],
+  ['tools', 'gen', 'generate (confirmed)', true, 'b', 't'], ['gen', 'oss', '', true, 'r', 'l'],
+  ['s3', 'eb', 'object created', false, 't', 'b'], ['eb', 'coord', '', false, 'r', 'l'],
+  ['coord', 'worker', 'prepare · render', false, 'b', 't'], ['coord', 'mw', '', false, 'r', 'l'],
+  ['worker', 's3', 'renders', false, 'b', 'r'],
+  ['mw', 'peg', '', false, 'r', 'l'], ['mw', 'tr', '', false, 'r', 'l'], ['mw', 'vec', '', false, 'b', 't'],
 ];
 const svg = document.getElementById('d');
 const NS = 'http://www.w3.org/2000/svg';
@@ -112,7 +117,7 @@ for (const l of LANES) {
 }
 const port = (n, side) => {
   const p = N[n];
-  if (n === 'user') return { r: [p.x + 92, p.y + 40], l: [p.x, p.y + 40], t: [p.x + 50, p.y], b: [p.x + 50, p.y + 100] }[side];
+  if (n === 'user') return { r: [p.x + 82, p.y + 25], l: [p.x + 18, p.y + 25], t: [p.x + 50, p.y - 8], b: [p.x + 50, p.y + 100] }[side];
   return { r: [p.x + W, p.y + H / 2], l: [p.x, p.y + H / 2], t: [p.x + W / 2, p.y], b: [p.x + W / 2, p.y + H] }[side];
 };
 for (const [a, b, label, dashed, fs, ts] of E) {
@@ -127,8 +132,9 @@ for (const [a, b, label, dashed, fs, ts] of E) {
   el('path', { d: `M${x1},${y1} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${x2},${y2}`, fill: 'none', stroke: 'var(--edge)',
     'stroke-width': 2, 'stroke-dasharray': dashed ? '6 5' : '', 'marker-end': 'url(#arrow)', opacity: 0.9 });
   if (label) {
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 6;
-    const t = el('text', { x: mx, y: my, 'text-anchor': 'middle', class: 'edge-label' }); t.textContent = label;
+    const vertical = Math.abs(x2 - x1) < 12;
+    const mx = vertical ? x1 + 8 : (x1 + x2) / 2, my = vertical ? (y1 + y2) / 2 + 4 : (y1 + y2) / 2 - 7;
+    const t = el('text', { x: mx, y: my, 'text-anchor': vertical ? 'start' : 'middle', class: 'edge-label' }); t.textContent = label;
     const bb = t.getBBox();
     const bg = el('rect', { x: bb.x - 4, y: bb.y - 1, width: bb.width + 8, height: bb.height + 2, rx: 3, fill: 'var(--surface-1)', opacity: 0.92 });
     svg.insertBefore(bg, t);
