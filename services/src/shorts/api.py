@@ -1,0 +1,649 @@
+"""Archive / identity / sharing REST API (API Gateway HTTP API, Cognito JWT authorizer)."""
+from __future__ import annotations
+
+import base64
+import json
+import math
+import os
+import uuid
+from datetime import datetime, timezone
+
+import boto3
+
+from . import acl, ddb, projects, search, storage
+from .auth import Forbidden, Principal
+from .config import get_config
+from .http import BadRequest, Conflict, NotFound, Request, Router
+
+router = Router()
+
+PART_SIZE = 64 * 1024 * 1024          # 64 MiB parts → 10,000 parts ≈ 640 GiB max
+MAX_PART_URLS_PER_CALL = 100
+URL_TTL = 3600
+
+
+def new_id(prefix: str = "") -> str:
+    return prefix + uuid.uuid4().hex[:20]
+
+
+def audit(p: Principal, action: str, resource: str, detail: dict | None = None) -> None:
+    ts = ddb.now_ms()
+    day = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%d")
+    ddb.put({"PK": f"AUDIT#{p.tenant_id}#{day}", "SK": f"{ts}#{uuid.uuid4().hex[:8]}", "actor": p.sub,
+             "action": action, "resource": resource, "detail": detail or {}, "ts": ts})
+
+
+def _asset(asset_id: str) -> dict | None:
+    return ddb.get(f"ASSET#{asset_id}", "META")
+
+
+def _require_asset(p: Principal, asset_id: str, action: str) -> tuple[dict, str]:
+    asset = _asset(asset_id)
+    role = acl.require(p, asset, action)
+    return asset, role
+
+
+def _require_admin(p: Principal) -> None:
+    if not p.is_tenant_admin:
+        raise Forbidden("Tenant admin only")
+
+
+# ================================================================== me / tenant / groups / users
+@router.route("GET", "/me")
+def me(req: Request):
+    p = req.principal
+    tenant = ddb.get(f"TENANT#{p.tenant_id}", "META") or {}
+    groups = ddb.batch_get((f"TENANT#{p.tenant_id}", f"GROUP#{g}") for g in p.groups)
+    return {"sub": p.sub, "email": p.email, "tenantId": p.tenant_id, "tenantName": tenant.get("name"),
+            "tenantRole": p.tenant_role,
+            "groups": [{"groupId": g["SK"].removeprefix("GROUP#"), "name": g.get("name")} for g in groups],
+            "features": {"generation": os.environ.get("DEPLOY_MODE", "edit") == "full"}}
+
+
+@router.route("GET", "/users")
+def list_users(req: Request):
+    p = req.principal
+    members = ddb.query(f"TENANT#{p.tenant_id}", "MEMBER#")
+    profiles = {u["PK"].removeprefix("USER#"): u for u in
+                ddb.batch_get((f"USER#{m['SK'].removeprefix('MEMBER#')}", "PROFILE") for m in members)}
+    return [{"sub": sid, "email": profiles.get(sid, {}).get("email"), "name": profiles.get(sid, {}).get("name"),
+             "tenantRole": m.get("role")} for m in members for sid in [m["SK"].removeprefix("MEMBER#")]]
+
+
+@router.route("POST", "/users/invite")
+def invite_user(req: Request):
+    p = req.principal
+    _require_admin(p)
+    (email,) = req.require("email")
+    role = req.body.get("tenantRole", "member")
+    if role not in {"admin", "member"}:
+        raise BadRequest("tenantRole must be admin or member")
+    cognito = boto3.client("cognito-idp")
+    resp = cognito.admin_create_user(
+        UserPoolId=os.environ["USER_POOL_ID"], Username=email,
+        UserAttributes=[{"Name": "email", "Value": email}, {"Name": "email_verified", "Value": "true"}],
+        DesiredDeliveryMediums=["EMAIL"],
+    )
+    sub = next(a["Value"] for a in resp["User"]["Attributes"] if a["Name"] == "sub")
+    provision_user(sub, email, p.tenant_id, role)
+    audit(p, "user.invite", f"USER#{sub}", {"email": email, "role": role})
+    return {"sub": sub, "email": email, "tenantRole": role}
+
+
+def provision_user(sub: str, email: str, tenant_id: str, role: str, name: str = "") -> None:
+    ddb.put({"PK": f"USER#{sub}", "SK": "PROFILE", "tenantId": tenant_id, "email": email, "name": name,
+             "createdAt": ddb.now_ms()})
+    ddb.put({"PK": f"TENANT#{tenant_id}", "SK": f"MEMBER#{sub}", "role": role, "joinedAt": ddb.now_ms()})
+
+
+@router.route("GET", "/groups")
+def list_groups(req: Request):
+    p = req.principal
+    return [{"groupId": g["SK"].removeprefix("GROUP#"), "name": g.get("name"), "member": g["SK"].removeprefix("GROUP#") in p.groups}
+            for g in ddb.query(f"TENANT#{p.tenant_id}", "GROUP#")]
+
+
+@router.route("POST", "/groups")
+def create_group(req: Request):
+    p = req.principal
+    _require_admin(p)
+    (name,) = req.require("name")
+    gid = new_id("g")
+    ddb.put({"PK": f"TENANT#{p.tenant_id}", "SK": f"GROUP#{gid}", "name": name, "createdAt": ddb.now_ms()})
+    audit(p, "group.create", f"GROUP#{gid}", {"name": name})
+    return {"groupId": gid, "name": name}
+
+
+@router.route("GET", "/groups/{groupId}/members")
+def group_members(req: Request):
+    p = req.principal
+    if not ddb.get(f"TENANT#{p.tenant_id}", f"GROUP#{req.params['groupId']}"):
+        raise NotFound("Group not found")
+    return [m["SK"].removeprefix("MEMBER#") for m in ddb.query(f"GROUP#{req.params['groupId']}", "MEMBER#")]
+
+
+@router.route("POST", "/groups/{groupId}/members")
+def add_group_member(req: Request):
+    p = req.principal
+    _require_admin(p)
+    gid = req.params["groupId"]
+    (sub,) = req.require("sub")
+    if not ddb.get(f"TENANT#{p.tenant_id}", f"GROUP#{gid}") or not ddb.get(f"TENANT#{p.tenant_id}", f"MEMBER#{sub}"):
+        raise NotFound("Group or user not found")
+    ddb.put({"PK": f"GROUP#{gid}", "SK": f"MEMBER#{sub}", "GSI1PK": f"USER#{sub}", "GSI1SK": f"GROUP#{gid}"})
+    audit(p, "group.member.add", f"GROUP#{gid}", {"sub": sub})
+    return {"ok": True}
+
+
+@router.route("DELETE", "/groups/{groupId}/members/{sub}")
+def remove_group_member(req: Request):
+    p = req.principal
+    _require_admin(p)
+    ddb.delete(f"GROUP#{req.params['groupId']}", f"MEMBER#{req.params['sub']}")
+    audit(p, "group.member.remove", f"GROUP#{req.params['groupId']}", {"sub": req.params["sub"]})
+
+
+# ================================================================== uploads
+@router.route("POST", "/assets")
+def create_asset(req: Request):
+    """Create an asset record and start a multipart upload."""
+    p = req.principal
+    filename, size = req.require("filename", "size")
+    size = int(size)
+    if size <= 0:
+        raise BadRequest("size must be > 0")
+    content_type = req.body.get("contentType") or "application/octet-stream"
+    scope = req.body.get("scope", "archive")  # archive | project
+    if scope not in {"archive", "project"}:
+        raise BadRequest("scope must be archive or project")
+    collection_id = req.body.get("collectionId")
+    if collection_id:
+        coll = ddb.get(f"COLL#{collection_id}", "META")
+        _require_collection(p, coll, "edit")
+    asset_id = new_id("a")
+    key = storage.original_key(p.tenant_id, asset_id, filename)
+    now = ddb.now_ms()
+    upload = storage.s3().create_multipart_upload(Bucket=get_config().media_bucket, Key=key, ContentType=content_type)
+    ddb.put({
+        "PK": f"ASSET#{asset_id}", "SK": "META", "assetId": asset_id, "tenantId": p.tenant_id, "ownerId": p.sub,
+        "filename": filename, "contentType": content_type, "sizeBytes": size, "status": "uploading",
+        "scope": scope, "projectId": req.body.get("projectId"), "collectionIds": [collection_id] if collection_id else [],
+        "title": req.body.get("title"), "tags": req.body.get("tags", []), "uploadId": upload["UploadId"],
+        "originalKey": key, "createdAt": now, "updatedAt": now,
+        "GSI2PK": f"TENANT#{p.tenant_id}", "GSI2SK": f"ASSET#{now}#{asset_id}",
+    })
+    acl.grant(f"ASSET#{asset_id}", f"USER#{p.sub}", "owner", p.tenant_id, p.sub)
+    if collection_id:
+        ddb.put({"PK": f"COLL#{collection_id}", "SK": f"ASSET#{asset_id}", "addedAt": now})
+    part_size = max(PART_SIZE, math.ceil(size / 10_000))
+    audit(p, "asset.create", f"ASSET#{asset_id}", {"filename": filename, "size": size})
+    return {"assetId": asset_id, "uploadId": upload["UploadId"], "partSize": part_size,
+            "partCount": max(1, math.ceil(size / part_size))}
+
+
+def _uploading_asset(req: Request) -> dict:
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "edit")
+    if asset.get("status") != "uploading" or not asset.get("uploadId"):
+        raise Conflict("Asset is not awaiting upload")
+    return asset
+
+
+@router.route("POST", "/assets/{assetId}/upload/parts")
+def presign_parts(req: Request):
+    asset = _uploading_asset(req)
+    numbers = [int(n) for n in req.body.get("partNumbers", [])][:MAX_PART_URLS_PER_CALL]
+    if not numbers or any(n < 1 or n > 10_000 for n in numbers):
+        raise BadRequest("partNumbers must be 1..10000")
+    urls = {n: storage.s3().generate_presigned_url(
+        "upload_part", ExpiresIn=URL_TTL,
+        Params={"Bucket": get_config().media_bucket, "Key": asset["originalKey"], "UploadId": asset["uploadId"],
+                "PartNumber": n}) for n in numbers}
+    return {"urls": urls}
+
+
+@router.route("POST", "/assets/{assetId}/upload/complete")
+def complete_upload(req: Request):
+    asset = _uploading_asset(req)
+    parts = sorted(({"PartNumber": int(x["partNumber"]), "ETag": x["etag"]} for x in req.body.get("parts", [])),
+                   key=lambda x: x["PartNumber"])
+    if not parts:
+        raise BadRequest("parts required")
+    storage.s3().complete_multipart_upload(Bucket=get_config().media_bucket, Key=asset["originalKey"],
+                                           UploadId=asset["uploadId"], MultipartUpload={"Parts": parts})
+    ddb.update(f"ASSET#{asset['assetId']}", "META", {"status": "queued", "uploadId": None, "updatedAt": ddb.now_ms()})
+    return {"assetId": asset["assetId"], "status": "queued"}
+
+
+@router.route("POST", "/assets/{assetId}/upload/abort")
+def abort_upload(req: Request):
+    asset = _uploading_asset(req)
+    storage.s3().abort_multipart_upload(Bucket=get_config().media_bucket, Key=asset["originalKey"],
+                                        UploadId=asset["uploadId"])
+    ddb.update(f"ASSET#{asset['assetId']}", "META", {"status": "aborted", "deletedAt": ddb.now_ms()})
+
+
+# ================================================================== assets
+@router.route("GET", "/assets")
+def list_assets(req: Request):
+    p = req.principal
+    accessible = acl.accessible_asset_ids(p)
+    kind = req.query.get("kind")
+    collection = req.query.get("collectionId")
+    project = req.query.get("projectId")
+    trash = req.query.get("trash") == "1"
+    if collection:
+        _require_collection(p, ddb.get(f"COLL#{collection}", "META"), "view")
+        ids = {m["SK"].removeprefix("ASSET#") for m in ddb.query(f"COLL#{collection}", "ASSET#")}
+        accessible = {a: r for a, r in accessible.items() if a in ids}
+    items = ddb.batch_get((f"ASSET#{aid}", "META") for aid in accessible)
+    out = []
+    for a in items:
+        if bool(a.get("deletedAt")) != trash or a.get("status") == "aborted":
+            continue
+        if kind and a.get("kind") != kind:
+            continue
+        if project:
+            if a.get("projectId") != project:
+                continue
+        elif a.get("scope") == "project" and not collection:
+            continue
+        out.append(_with_thumb(search.public_asset(a, accessible[a["assetId"]]), a))
+    out.sort(key=lambda a: -a.get("createdAt", 0))
+    return out
+
+
+def _with_thumb(public: dict, asset: dict) -> dict:
+    if asset.get("thumbnailKey"):
+        public["thumbnailUrl"] = storage.presign_get(asset["thumbnailKey"], URL_TTL)
+    return public
+
+
+@router.route("GET", "/assets/{assetId}")
+def get_asset(req: Request):
+    asset, role = _require_asset(req.principal, req.params["assetId"], "view")
+    out = _with_thumb(search.public_asset(asset, role), asset)
+    if asset.get("contentKey"):
+        content = ddb.get(f"CONTENT#{asset['contentKey']}", "META") or {}
+        out["processing"] = {"status": content.get("status"), "stages": content.get("stages", {}),
+                             "error": content.get("lastError")}
+        summary = ddb.get(f"CONTENT#{asset['contentKey']}", "ANALYSIS#summary")
+        if summary:
+            out["analysisSummary"] = {k: v for k, v in summary.items() if k not in {"PK", "SK"}}
+    out["grants"] = _grants(f"ASSET#{asset['assetId']}") if role == "owner" else None
+    return out
+
+
+@router.route("GET", "/assets/{assetId}/media")
+def asset_media(req: Request):
+    """Presigned URLs for proxies, sprites, waveform, pages — usable by the preview compositor."""
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "use")
+    content = ddb.get(f"CONTENT#{asset.get('contentKey', '')}", "META") if asset.get("contentKey") else None
+    if not content or not content.get("manifest"):
+        raise Conflict("Asset is still processing")
+    m = content["manifest"]
+    sign = lambda k: storage.presign_get(k, URL_TTL) if k else None  # noqa: E731
+    out = {"kind": m["kind"], "durationSec": m.get("durationSec"), "width": m.get("width"), "height": m.get("height"),
+           "fps": m.get("fps"), "proxyUrl": sign(m.get("proxyKey")), "scrubUrl": sign(m.get("scrubKey")),
+           "audioUrl": sign(m.get("audioKey")), "waveformUrl": sign(m.get("waveformKey")),
+           "thumbnailUrl": sign(m.get("thumbnailKey")), "imageUrl": sign(m.get("imageKey")),
+           "expiresIn": URL_TTL}
+    if m.get("sprites"):
+        out["sprites"] = {**{k: v for k, v in m["sprites"].items() if k != "sheets"},
+                          "sheets": [{**s, "url": sign(s["key"])} for s in m["sprites"]["sheets"]]}
+    if m.get("images") and m["kind"] == "document":
+        out["pages"] = [{"index": i["index"], "url": sign(i["key"]), "width": i["width"], "height": i["height"]}
+                        for i in m["images"]]
+    audit(req.principal, "asset.use", f"ASSET#{asset['assetId']}")
+    return out
+
+
+@router.route("GET", "/assets/{assetId}/analysis")
+def asset_analysis(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "use")
+    ck = asset.get("contentKey")
+    if not ck:
+        raise Conflict("Asset is still processing")
+    prefix = storage.content_prefix(ck)
+    out = {}
+    for name, key in (("scenes", "analysis/scenes.json"), ("chapters", "analysis/chapters.json"),
+                      ("summary", "analysis/summary.json")):
+        try:
+            out[name] = json.loads(storage.s3().get_object(Bucket=get_config().media_bucket,
+                                                           Key=f"{prefix}/{key}")["Body"].read())
+        except storage.s3().exceptions.NoSuchKey:
+            out[name] = None
+    words, sentences = [], []
+    listing = storage.s3().list_objects_v2(Bucket=get_config().media_bucket, Prefix=f"{prefix}/transcribe/0")
+    for obj in sorted(listing.get("Contents", []), key=lambda o: o["Key"]):
+        t = json.loads(storage.s3().get_object(Bucket=get_config().media_bucket, Key=obj["Key"])["Body"].read())
+        words.extend(t.get("words", []))
+        sentences.extend(t.get("sentences", []))
+    out["transcript"] = {"words": words, "sentences": sentences} if words else None
+    return out
+
+
+EDITABLE = {"title", "tags", "people", "description"}
+
+
+@router.route("PATCH", "/assets/{assetId}")
+def update_asset(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "edit")
+    fields = {k: v for k, v in req.body.items() if k in EDITABLE}
+    if not fields:
+        raise BadRequest(f"Editable fields: {sorted(EDITABLE)}")
+    if "title" in fields:
+        fields["titleEdited"] = True
+    if "people" in fields:  # manual person tags: [{name, segments?:[{startSec,endSec}]}]
+        if not isinstance(fields["people"], list):
+            raise BadRequest("people must be a list")
+    fields["updatedAt"] = ddb.now_ms()
+    updated = ddb.update(f"ASSET#{asset['assetId']}", "META", fields)
+    audit(req.principal, "asset.update", f"ASSET#{asset['assetId']}", {"fields": sorted(fields)})
+    return search.public_asset(updated)
+
+
+@router.route("DELETE", "/assets/{assetId}")
+def delete_asset(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "delete")
+    ddb.update(f"ASSET#{asset['assetId']}", "META", {"deletedAt": ddb.now_ms(), "deletedBy": req.principal.sub})
+    audit(req.principal, "asset.delete", f"ASSET#{asset['assetId']}")
+
+
+@router.route("POST", "/assets/{assetId}/restore")
+def restore_asset(req: Request):
+    p = req.principal
+    asset = _asset(req.params["assetId"])
+    if not asset or asset.get("tenantId") != p.tenant_id or not asset.get("deletedAt"):
+        raise NotFound("Asset not found")
+    if asset.get("ownerId") != p.sub and not p.is_tenant_admin:
+        raise NotFound("Asset not found")
+    ddb.update_raw(f"ASSET#{asset['assetId']}", "META", "REMOVE deletedAt, deletedBy")
+    audit(p, "asset.restore", f"ASSET#{asset['assetId']}")
+    return {"ok": True}
+
+
+@router.route("GET", "/assets/{assetId}/download")
+def download_asset(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "download")
+    audit(req.principal, "asset.download", f"ASSET#{asset['assetId']}")
+    return {"url": storage.presign_get(asset["originalKey"], 900, asset.get("filename"))}
+
+
+# ================================================================== sharing
+def _grants(resource: str) -> list[dict]:
+    return [{"principal": g["principal"], "role": g["role"], "expiresAt": g.get("expiresAt"),
+             "grantedBy": g.get("grantedBy")} for g in ddb.query(resource, "GRANT#")]
+
+
+def _set_grant(req: Request, resource: str) -> dict:
+    principal, role = req.require("principal", "role")
+    expires = req.body.get("expiresAt")
+    g = acl.grant(resource, principal, role, req.principal.tenant_id, req.principal.sub,
+                  int(expires) if expires else None)
+    audit(req.principal, "share.grant", resource, {"principal": principal, "role": role, "expiresAt": expires})
+    return {"principal": g["principal"], "role": g["role"], "expiresAt": g.get("expiresAt")}
+
+
+@router.route("GET", "/assets/{assetId}/grants")
+def asset_grants(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "share")
+    return _grants(f"ASSET#{asset['assetId']}")
+
+
+@router.route("PUT", "/assets/{assetId}/grants")
+def put_asset_grant(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "share")
+    return _set_grant(req, f"ASSET#{asset['assetId']}")
+
+
+@router.route("DELETE", "/assets/{assetId}/grants/{principal}")
+def delete_asset_grant(req: Request):
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "share")
+    principal = req.params["principal"].replace("%23", "#")
+    if principal == f"USER#{asset['ownerId']}":
+        raise BadRequest("Cannot revoke the owner")
+    acl.revoke(f"ASSET#{asset['assetId']}", principal)
+    audit(req.principal, "share.revoke", f"ASSET#{asset['assetId']}", {"principal": principal})
+
+
+# ================================================================== collections
+def _collection_role(p: Principal, coll: dict | None) -> str | None:
+    if not coll or coll.get("tenantId") != p.tenant_id:
+        return None
+    if coll.get("ownerId") == p.sub or p.is_tenant_admin:
+        return "owner"
+    ids, now = set(p.principal_ids()), ddb.now_ms()
+    return acl.max_role([g["role"] for g in ddb.query(f"COLL#{coll['collectionId']}", "GRANT#")
+                         if g["principal"] in ids and (not g.get("expiresAt") or g["expiresAt"] > now)])
+
+
+def _require_collection(p: Principal, coll: dict | None, action: str) -> str:
+    role = _collection_role(p, coll)
+    if role is None:
+        raise NotFound("Collection not found")
+    if acl.ROLE_RANK[role] < acl.ROLE_RANK[acl.ACTION_MIN_ROLE[action]]:
+        raise Forbidden(f"'{action}' requires role {acl.ACTION_MIN_ROLE[action]}")
+    return role
+
+
+@router.route("GET", "/collections")
+def list_collections(req: Request):
+    p = req.principal
+    out = []
+    for c in ddb.query(f"TENANT#{p.tenant_id}", "COLL#", index="GSI2"):
+        role = _collection_role(p, c)
+        if role:
+            out.append({"collectionId": c["collectionId"], "name": c.get("name"), "ownerId": c.get("ownerId"),
+                        "role": role, "createdAt": c.get("createdAt")})
+    return out
+
+
+@router.route("POST", "/collections")
+def create_collection(req: Request):
+    p = req.principal
+    (name,) = req.require("name")
+    cid = new_id("c")
+    now = ddb.now_ms()
+    ddb.put({"PK": f"COLL#{cid}", "SK": "META", "collectionId": cid, "name": name, "tenantId": p.tenant_id,
+             "ownerId": p.sub, "createdAt": now, "GSI2PK": f"TENANT#{p.tenant_id}", "GSI2SK": f"COLL#{cid}"})
+    acl.grant(f"COLL#{cid}", f"USER#{p.sub}", "owner", p.tenant_id, p.sub)
+    audit(p, "collection.create", f"COLL#{cid}", {"name": name})
+    return {"collectionId": cid, "name": name, "role": "owner"}
+
+
+@router.route("POST", "/collections/{collectionId}/assets")
+def add_to_collection(req: Request):
+    p = req.principal
+    cid = req.params["collectionId"]
+    _require_collection(p, ddb.get(f"COLL#{cid}", "META"), "edit")
+    added = []
+    for aid in req.body.get("assetIds", [])[:500]:
+        asset, _ = _require_asset(p, aid, "edit")
+        ddb.put({"PK": f"COLL#{cid}", "SK": f"ASSET#{aid}", "addedAt": ddb.now_ms()})
+        ddb.update(f"ASSET#{aid}", "META", {"collectionIds": sorted(set(asset.get("collectionIds", [])) | {cid})})
+        added.append(aid)
+    audit(p, "collection.add", f"COLL#{cid}", {"assetIds": added})
+    return {"added": added}
+
+
+@router.route("DELETE", "/collections/{collectionId}/assets/{assetId}")
+def remove_from_collection(req: Request):
+    p = req.principal
+    cid, aid = req.params["collectionId"], req.params["assetId"]
+    _require_collection(p, ddb.get(f"COLL#{cid}", "META"), "edit")
+    asset = _asset(aid)
+    ddb.delete(f"COLL#{cid}", f"ASSET#{aid}")
+    if asset:
+        ddb.update(f"ASSET#{aid}", "META", {"collectionIds": [c for c in asset.get("collectionIds", []) if c != cid]})
+
+
+@router.route("GET", "/collections/{collectionId}/grants")
+def collection_grants(req: Request):
+    _require_collection(req.principal, ddb.get(f"COLL#{req.params['collectionId']}", "META"), "share")
+    return _grants(f"COLL#{req.params['collectionId']}")
+
+
+@router.route("PUT", "/collections/{collectionId}/grants")
+def put_collection_grant(req: Request):
+    _require_collection(req.principal, ddb.get(f"COLL#{req.params['collectionId']}", "META"), "share")
+    return _set_grant(req, f"COLL#{req.params['collectionId']}")
+
+
+@router.route("DELETE", "/collections/{collectionId}/grants/{principal}")
+def delete_collection_grant(req: Request):
+    _require_collection(req.principal, ddb.get(f"COLL#{req.params['collectionId']}", "META"), "share")
+    acl.revoke(f"COLL#{req.params['collectionId']}", req.params["principal"].replace("%23", "#"))
+
+
+# ================================================================== access requests
+@router.route("POST", "/access-requests")
+def request_access(req: Request):
+    """Request access to an asset/collection whose ID was shared out-of-band (e.g. a link)."""
+    p = req.principal
+    resource, role = req.require("resource", "role")
+    kind, _, rid = resource.partition("#")
+    item = ddb.get(resource, "META") if kind in {"ASSET", "COLL"} else None
+    if not item or item.get("tenantId") != p.tenant_id or role not in acl.ROLE_RANK or role == "owner":
+        raise NotFound("Resource not found")
+    ts = ddb.now_ms()
+    ddb.put({"PK": resource, "SK": f"REQUEST#{p.sub}", "GSI1PK": f"INBOX#{item['ownerId']}",
+             "GSI1SK": f"REQUEST#{ts}#{rid}#{p.sub}", "requester": p.sub, "role": role,
+             "message": str(req.body.get("message", ""))[:500], "createdAt": ts, "resource": resource,
+             "title": item.get("title") or item.get("name") or item.get("filename")})
+    return {"ok": True}
+
+
+@router.route("GET", "/access-requests")
+def list_access_requests(req: Request):
+    return [{k: r.get(k) for k in ("resource", "requester", "role", "message", "createdAt", "title")}
+            for r in ddb.query(f"INBOX#{req.principal.sub}", "REQUEST#", index="GSI1", forward=False)]
+
+
+@router.route("POST", "/access-requests/decide")
+def decide_access_request(req: Request):
+    p = req.principal
+    resource, requester, decision = req.require("resource", "requester", "decision")
+    item = ddb.get(resource, "META")
+    request = ddb.get(resource, f"REQUEST#{requester}")
+    if not item or not request or (item.get("ownerId") != p.sub and not p.is_tenant_admin):
+        raise NotFound("Request not found")
+    if decision == "approve":
+        acl.grant(resource, f"USER#{requester}", request["role"], p.tenant_id, p.sub, req.body.get("expiresAt"))
+    ddb.delete(resource, f"REQUEST#{requester}")
+    audit(p, f"access.{decision}", resource, {"requester": requester})
+    return {"ok": True}
+
+
+# ================================================================== search
+@router.route("POST", "/search")
+def search_archive(req: Request):
+    p = req.principal
+    text = (req.body.get("text") or "").strip() or None
+    image = None
+    if req.body.get("imageAssetId"):
+        asset, _ = _require_asset(p, req.body["imageAssetId"], "use")
+        content = ddb.get(f"CONTENT#{asset.get('contentKey', '')}", "META") or {}
+        key = (content.get("manifest") or {}).get("imageKey") or (content.get("manifest") or {}).get("thumbnailKey")
+        if not key:
+            raise Conflict("Image asset not processed yet")
+        image = storage.s3().get_object(Bucket=get_config().media_bucket, Key=key)["Body"].read()
+    elif req.body.get("imageBase64"):
+        image = base64.b64decode(req.body["imageBase64"])
+        if len(image) > 5 * 1024 * 1024:
+            raise BadRequest("Image must be <= 5 MB")
+    if not text and not image:
+        raise BadRequest("Provide text and/or an image")
+    results = search.search(p, text=text, image=image, modalities=req.body.get("modalities"),
+                            kinds=req.body.get("kinds"), asset_ids=req.body.get("assetIds"),
+                            limit=min(int(req.body.get("limit", 20)), 50))
+    for r in results:
+        a = _asset(r["asset"]["assetId"])
+        if a:
+            _with_thumb(r["asset"], a)
+    return results
+
+
+# ================================================================== projects / timelines
+@router.route("GET", "/projects")
+def list_projects(req: Request):
+    return projects.list_for(req.principal)
+
+
+@router.route("POST", "/projects")
+def create_project(req: Request):
+    aspect = req.body.get("aspect", "9:16")
+    if aspect not in projects.ASPECTS:
+        raise BadRequest(f"aspect must be one of {sorted(projects.ASPECTS)}")
+    item = projects.create(req.principal, str(req.body.get("title") or "Untitled")[:200], aspect,
+                           str(req.body.get("synopsis", ""))[:4000])
+    audit(req.principal, "project.create", f"PROJ#{item['projectId']}")
+    return {"projectId": item["projectId"], "currentVersion": 0}
+
+
+@router.route("GET", "/projects/{projectId}")
+def get_project(req: Request):
+    project, role = projects.require_project(req.principal, req.params["projectId"], "view")
+    version = int(req.query["version"]) if req.query.get("version") else None
+    return {"project": {k: project.get(k) for k in ("projectId", "title", "aspect", "synopsis", "currentVersion",
+                                                      "createdAt", "updatedAt", "ownerId", "agentSessionId")},
+            "role": role, "lock": projects.lock_state(project), "timeline": projects.load_timeline(project, version)}
+
+
+@router.route("PATCH", "/projects/{projectId}")
+def update_project(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
+    fields = {k: str(v)[:4000] for k, v in req.body.items() if k in {"title", "synopsis"}}
+    if not fields:
+        raise BadRequest("Editable fields: title, synopsis")
+    ddb.update(f"PROJ#{project['projectId']}", "META", {**fields, "updatedAt": ddb.now_ms()})
+    return {"ok": True}
+
+
+@router.route("PUT", "/projects/{projectId}/timeline")
+def save_timeline(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
+    timeline, base = req.require("timeline", "baseVersion")
+    updated = projects.save(req.principal, project, timeline, int(base), "user", str(req.body.get("message", "")))
+    return {"currentVersion": updated["currentVersion"]}
+
+
+@router.route("GET", "/projects/{projectId}/versions")
+def project_versions(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    return projects.versions(project["projectId"])
+
+
+@router.route("POST", "/projects/{projectId}/restore")
+def restore_version(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "edit")
+    (version,) = req.require("version")
+    timeline = projects.load_timeline(project, int(version))
+    updated = projects.save(req.principal, project, timeline, project["currentVersion"], "user",
+                            f"restore v{int(version)}")
+    return {"currentVersion": updated["currentVersion"]}
+
+
+@router.route("DELETE", "/projects/{projectId}")
+def delete_project(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "delete")
+    ddb.update(f"PROJ#{project['projectId']}", "META", {"deletedAt": ddb.now_ms()})
+    audit(req.principal, "project.delete", f"PROJ#{project['projectId']}")
+
+
+@router.route("PUT", "/projects/{projectId}/grants")
+def put_project_grant(req: Request):
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "share")
+    return _set_grant(req, f"PROJ#{project['projectId']}")
+
+
+# ================================================================== audit
+@router.route("GET", "/audit")
+def get_audit(req: Request):
+    p = req.principal
+    _require_admin(p)
+    day = req.query.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return ddb.query(f"AUDIT#{p.tenant_id}#{day}", forward=False, limit=500)
+
+
+def handler(event, _context):
+    return router.handle(event)

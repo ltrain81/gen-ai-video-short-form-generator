@@ -1,0 +1,173 @@
+"""Projects and versioned timelines.
+
+  PROJ#{p}  META        project (tenantId, ownerId, title, currentVersion, lock)   GSI2: TENANT#{t} / PROJ#{updatedAt}#{p}
+  PROJ#{p}  VER#{n:06d} version record (author, message, createdAt)
+  PROJ#{p}  GRANT#...   sharing (same roles as assets)
+  S3: projects/{t}/{p}/timeline/{n:06d}.json   full snapshot per version (every agent turn / user save)
+"""
+from __future__ import annotations
+
+import json
+import uuid
+
+from . import acl, ddb, storage
+from .auth import Forbidden, Principal
+from .config import get_config
+from .http import Conflict, NotFound
+
+LOCK_TTL_MS = 10 * 60 * 1000
+ASPECTS = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080), "4:5": (1080, 1350), "4:3": (1440, 1080)}
+
+
+def empty_timeline(timeline_id: str, project_id: str, aspect: str = "9:16") -> dict:
+    w, h = ASPECTS.get(aspect, ASPECTS["9:16"])
+    return {
+        "version": 1, "id": timeline_id, "projectId": project_id,
+        "settings": {"aspect": aspect, "width": w, "height": h, "fps": 30, "background": "#000000", "loudness": -14,
+                     "safeZone": "shorts" if aspect == "9:16" else "none"},
+        "tracks": [
+            {"id": "v1", "kind": "video", "name": "Video", "items": [], "audioRole": "dialogue"},
+            {"id": "o1", "kind": "overlay", "name": "B-roll", "items": []},
+            {"id": "t1", "kind": "text", "name": "Text", "items": []},
+            {"id": "c1", "kind": "caption", "name": "Captions", "items": []},
+            {"id": "a1", "kind": "audio", "name": "Music", "items": [], "audioRole": "music", "volume": 0.6},
+            {"id": "a2", "kind": "audio", "name": "Voiceover", "items": [], "audioRole": "voiceover"},
+        ],
+        "markers": [], "meta": {}, "pins": [],
+    }
+
+
+def _key(tenant: str, pid: str, version: int) -> str:
+    return f"projects/{tenant}/{pid}/timeline/{version:06d}.json"
+
+
+def project_role(p: Principal, project: dict | None) -> str | None:
+    if not project or project.get("tenantId") != p.tenant_id or project.get("deletedAt"):
+        return None
+    if project.get("ownerId") == p.sub or p.is_tenant_admin:
+        return "owner"
+    ids, now = set(p.principal_ids()), ddb.now_ms()
+    return acl.max_role([g["role"] for g in ddb.query(f"PROJ#{project['projectId']}", "GRANT#")
+                         if g["principal"] in ids and (not g.get("expiresAt") or g["expiresAt"] > now)])
+
+
+def require_project(p: Principal, project_id: str, action: str) -> tuple[dict, str]:
+    project = ddb.get(f"PROJ#{project_id}", "META", consistent=True)
+    role = project_role(p, project)
+    if role is None:
+        raise NotFound("Project not found")
+    need = {"view": "user", "edit": "editor", "share": "owner", "delete": "owner"}[action]
+    if acl.ROLE_RANK[role] < acl.ROLE_RANK[need]:
+        raise Forbidden(f"'{action}' requires role {need}")
+    return project, role
+
+
+def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "") -> dict:
+    pid = "p" + uuid.uuid4().hex[:20]
+    now = ddb.now_ms()
+    timeline = empty_timeline("tl" + uuid.uuid4().hex[:12], pid, aspect)
+    _write_snapshot(p.tenant_id, pid, 0, timeline)
+    item = {"PK": f"PROJ#{pid}", "SK": "META", "projectId": pid, "tenantId": p.tenant_id, "ownerId": p.sub,
+            "title": title, "synopsis": synopsis, "aspect": aspect, "currentVersion": 0, "createdAt": now,
+            "updatedAt": now, "GSI2PK": f"TENANT#{p.tenant_id}", "GSI2SK": f"PROJ#{now}#{pid}"}
+    ddb.put(item)
+    ddb.put({"PK": f"PROJ#{pid}", "SK": f"VER#{0:06d}", "version": 0, "author": "system", "message": "created",
+             "createdAt": now})
+    acl.grant(f"PROJ#{pid}", f"USER#{p.sub}", "owner", p.tenant_id, p.sub)
+    return item
+
+
+def _write_snapshot(tenant: str, pid: str, version: int, timeline: dict) -> None:
+    storage.s3().put_object(Bucket=get_config().media_bucket, Key=_key(tenant, pid, version),
+                            Body=json.dumps(timeline, ensure_ascii=False).encode(), ContentType="application/json")
+
+
+def load_timeline(project: dict, version: int | None = None) -> dict:
+    v = project["currentVersion"] if version is None else version
+    body = storage.s3().get_object(Bucket=get_config().media_bucket,
+                                   Key=_key(project["tenantId"], project["projectId"], v))["Body"].read()
+    return json.loads(body)
+
+
+def lock_state(project: dict) -> dict | None:
+    lock = project.get("lock")
+    if lock and lock.get("expiresAt", 0) > ddb.now_ms():
+        return lock
+    return None
+
+
+def save(p: Principal, project: dict, timeline: dict, base_version: int, author: str, message: str = "",
+         holder: str | None = None) -> dict:
+    """Optimistic-concurrency save. `author` = 'user' | 'agent'. Agent saves must hold the lock."""
+    lock = lock_state(project)
+    if lock and lock.get("holder") != holder:
+        raise Conflict(f"Timeline is locked by {lock.get('holder')}")
+    _validate(p, timeline, project["projectId"])
+    new_version = base_version + 1
+    _write_snapshot(project["tenantId"], project["projectId"], new_version, timeline)
+    try:
+        updated = ddb.update_raw(
+            f"PROJ#{project['projectId']}", "META", "SET currentVersion = :n, updatedAt = :now, GSI2SK = :g",
+            values={":n": new_version, ":base": base_version, ":now": ddb.now_ms(),
+                    ":g": f"PROJ#{ddb.now_ms()}#{project['projectId']}"},
+            condition="currentVersion = :base",
+        )
+    except Exception as exc:
+        if ddb.conditional_failed(exc):
+            raise Conflict("Timeline changed since your base version; reload and retry")
+        raise
+    ddb.put({"PK": f"PROJ#{project['projectId']}", "SK": f"VER#{new_version:06d}", "version": new_version,
+             "author": author, "actor": p.sub, "message": message[:500], "createdAt": ddb.now_ms()})
+    return updated
+
+
+def acquire_lock(project: dict, holder: str) -> bool:
+    now = ddb.now_ms()
+    try:
+        ddb.update_raw(f"PROJ#{project['projectId']}", "META", "SET #l = :lock",
+                       names={"#l": "lock"}, values={":lock": {"holder": holder, "expiresAt": now + LOCK_TTL_MS},
+                                                     ":now": now, ":h": holder},
+                       condition="attribute_not_exists(#l) OR #l.expiresAt < :now OR #l.holder = :h")
+        return True
+    except Exception as exc:
+        if ddb.conditional_failed(exc):
+            return False
+        raise
+
+
+def release_lock(project_id: str, holder: str) -> None:
+    try:
+        ddb.update_raw(f"PROJ#{project_id}", "META", "REMOVE #l", names={"#l": "lock"}, values={":h": holder},
+                       condition="#l.holder = :h")
+    except Exception as exc:
+        if not ddb.conditional_failed(exc):
+            raise
+
+
+def _validate(p: Principal, timeline: dict, project_id: str) -> None:
+    if timeline.get("version") != 1 or timeline.get("projectId") != project_id:
+        raise ValueError("Invalid timeline (version/projectId)")
+    if not isinstance(timeline.get("tracks"), list):
+        raise ValueError("Invalid timeline (tracks)")
+    asset_ids = {i["assetId"] for t in timeline["tracks"] for i in t.get("items", []) if i.get("assetId")}
+    asset_ids |= {i["sourceAssetId"] for t in timeline["tracks"] for i in t.get("items", []) if i.get("sourceAssetId")}
+    if asset_ids:
+        accessible = acl.accessible_asset_ids(p)
+        denied = [a for a in asset_ids if a not in accessible]
+        if denied:
+            raise Forbidden(f"No access to assets: {', '.join(sorted(denied)[:5])}")
+
+
+def list_for(p: Principal) -> list[dict]:
+    out = []
+    for proj in ddb.query(f"TENANT#{p.tenant_id}", "PROJ#", index="GSI2", forward=False):
+        role = project_role(p, proj)
+        if role:
+            out.append({k: proj.get(k) for k in ("projectId", "title", "aspect", "currentVersion", "createdAt",
+                                                   "updatedAt", "ownerId", "synopsis")} | {"role": role})
+    return out
+
+
+def versions(project_id: str) -> list[dict]:
+    return [{k: v.get(k) for k in ("version", "author", "actor", "message", "createdAt")}
+            for v in ddb.query(f"PROJ#{project_id}", "VER#", forward=False, limit=200)]

@@ -1,0 +1,22 @@
+{
+  "name": "infra",
+  "private": true,
+  "version": "2.0.0",
+  "bin": { "infra": "bin/app.ts" },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth -q",
+    "deploy": "cdk deploy --all --require-approval never",
+    "test": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "aws-cdk": "2.1148.1",
+    "tsx": "^4",
+    "typescript": "~5.8"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.277.0",
+    "constructs": "^10.4.0"
+  }
+}

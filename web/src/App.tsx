@@ -1,0 +1,99 @@
+import AppLayout from '@cloudscape-design/components/app-layout';
+import Flashbar, { FlashbarProps } from '@cloudscape-design/components/flashbar';
+import SideNavigation from '@cloudscape-design/components/side-navigation';
+import Spinner from '@cloudscape-design/components/spinner';
+import TopNavigation from '@cloudscape-design/components/top-navigation';
+import { I18nProvider as CsI18nProvider } from '@cloudscape-design/components/i18n';
+import csMessagesEn from '@cloudscape-design/components/i18n/messages/all.en';
+import csMessagesKo from '@cloudscape-design/components/i18n/messages/all.ko';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { api } from './api/client';
+import type { Me } from './api/types';
+import { useAuth } from './auth';
+import { useI18n } from './i18n';
+import AdminPage from './pages/AdminPage';
+import ArchivePage from './pages/ArchivePage';
+import AssetPage from './pages/AssetPage';
+import LoginPage from './pages/LoginPage';
+import StudioPage from './pages/StudioPage';
+
+interface AppCtx {
+  me: Me | null;
+  notify: (type: FlashbarProps.Type, content: string) => void;
+}
+const Ctx = createContext<AppCtx>(null as never);
+export const useApp = () => useContext(Ctx);
+
+export default function App() {
+  const { user, loading, signOut } = useAuth();
+  const { t, lang, setLang } = useI18n();
+  const [me, setMe] = useState<Me | null>(null);
+  const [flash, setFlash] = useState<FlashbarProps.MessageDefinition[]>([]);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const notify = useCallback((type: FlashbarProps.Type, content: string) => {
+    const id = String(Date.now() + Math.random());
+    setFlash((f) => [...f, { type, content, id, dismissible: true, onDismiss: () => setFlash((x) => x.filter((m) => m.id !== id)) }]);
+    if (type === 'success') setTimeout(() => setFlash((x) => x.filter((m) => m.id !== id)), 4000);
+  }, []);
+
+  useEffect(() => {
+    if (user) api.me().then(setMe).catch((e) => notify('error', e.message));
+    else setMe(null);
+  }, [user, notify]);
+
+  if (loading) return <div className="login-wrap"><Spinner size="large" /></div>;
+  if (!user) return <LoginPage />;
+
+  const studio = location.pathname === '/';
+  return (
+    <CsI18nProvider locale={lang} messages={[lang === 'ko' ? csMessagesKo : csMessagesEn]}>
+      <Ctx.Provider value={{ me, notify }}>
+        <div id="top-nav" style={{ position: 'sticky', top: 0, zIndex: 1002 }}>
+          <TopNavigation
+            identity={{ href: '/', title: `${t('appName')} — ${t('appSubtitle')}`, onFollow: (e) => { e.preventDefault(); navigate('/'); } }}
+            utilities={[
+              { type: 'button', text: t('language'), onClick: () => setLang(lang === 'ko' ? 'en' : 'ko') },
+              {
+                type: 'menu-dropdown',
+                text: me?.email ?? user.username,
+                description: me?.tenantName,
+                iconName: 'user-profile',
+                items: [{ id: 'signout', text: t('signOut') }],
+                onItemClick: (e) => { if (e.detail.id === 'signout') signOut(); },
+              },
+            ]}
+          />
+        </div>
+        <AppLayout
+          headerSelector="#top-nav"
+          toolsHide
+          navigationOpen={!studio ? undefined : false}
+          navigation={
+            <SideNavigation
+              activeHref={'/' + (location.pathname.split('/')[1] ?? '')}
+              onFollow={(e) => { e.preventDefault(); navigate(e.detail.href); }}
+              items={[
+                { type: 'link', text: t('navStudio'), href: '/' },
+                { type: 'link', text: t('navArchive'), href: '/archive' },
+                ...(me?.tenantRole === 'admin' ? [{ type: 'link' as const, text: t('navAdmin'), href: '/admin' }] : []),
+              ]}
+            />
+          }
+          notifications={<Flashbar items={flash} stackItems />}
+          content={
+            <Routes>
+              <Route path="/" element={<StudioPage />} />
+              <Route path="/archive" element={<ArchivePage />} />
+              <Route path="/archive/:assetId" element={<AssetPage />} />
+              <Route path="/admin" element={<AdminPage />} />
+              <Route path="*" element={<Navigate to="/" />} />
+            </Routes>
+          }
+        />
+      </Ctx.Provider>
+    </CsI18nProvider>
+  );
+}

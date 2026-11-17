@@ -1,0 +1,8 @@
+{
+  "app": "npx tsx bin/app.ts",
+  "context": {
+    "mode": "edit",
+    "prefix": "Shorts",
+    "allowedLocalOrigins": ["http://localhost:5173", "http://127.0.0.1:5173"]
+  }
+}

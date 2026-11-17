@@ -1,7 +1,0 @@
-.template-video {
-  transition: transform 0.2s ease;
-}
-
-.template-video:hover {
-  transform: scale(1.05);
-}

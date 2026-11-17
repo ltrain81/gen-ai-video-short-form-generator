@@ -1,0 +1,12 @@
+body { margin: 0; }
+.thumb { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: #0f141a; display: block; }
+.thumb-placeholder { width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; background: linear-gradient(135deg, #232f3e, #414d5c); display: flex; align-items: center; justify-content: center; color: #d1d5db; font-size: 13px; }
+.player { width: 100%; max-height: 60vh; background: #000; border-radius: 8px; display: block; }
+.seg-row { display: flex; gap: 12px; align-items: baseline; cursor: pointer; padding: 6px 8px; border-radius: 6px; }
+.seg-row:hover { background: rgba(127, 127, 127, 0.12); }
+.seg-time { font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 96px; color: #0972d3; }
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-card { width: 100%; max-width: 420px; }
+.studio-center { min-height: calc(100vh - 160px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+.studio-center .prompt { width: min(760px, 92vw); }
+.drop-hint { border: 2px dashed rgba(127,127,127,0.4); border-radius: 12px; padding: 16px; text-align: center; }

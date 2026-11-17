@@ -1,52 +1,17 @@
 {
-  "name": "app",
+  "name": "aws-shorts-v2",
   "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "version": "2.0.0",
+  "description": "AWS Shorts V2 \u2014 AI Video Editor on Amazon Bedrock AgentCore",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "deploy": "pnpm --filter infra run deploy"
   },
-  "dependencies": {
-    "@aws-amplify/ui-react": "^6.1.14",
-    "@aws-amplify/ui-react-storage": "^3.8.1",
-    "@aws-sdk/client-sfn": "^3.624.0",
-    "@cloudscape-design/components": "^3.0.706",
-    "@cloudscape-design/global-styles": "^1.0.31",
-    "@react-spring/web": "^9.7.4",
-    "@types/react-router-dom": "^5.3.3",
-    "@types/uuid": "^10.0.0",
-    "@use-gesture/react": "^10.3.1",
-    "aws-amplify": "^6.13.2",
-    "aws-sdk": "^2.1669.0",
-    "ci": "^2.3.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-player": "^2.16.0",
-    "react-router-dom": "^6.26.0"
-  },
-  "devDependencies": {
-    "@aws-amplify/backend": "^1.0.4",
-    "@aws-amplify/backend-cli": "^1.2.2",
-    "@types/node": "^22.13.9",
-    "@types/react": "^18.2.66",
-    "@types/react-dom": "^18.2.22",
-    "@typescript-eslint/eslint-plugin": "^7.2.0",
-    "@typescript-eslint/parser": "^7.2.0",
-    "@vitejs/plugin-react": "^4.2.1",
-    "aws-cdk": "^2.1003.0",
-    "aws-cdk-lib": "^2.151.0",
-    "constructs": "^10.3.0",
-    "esbuild": "^0.21.4",
-    "eslint": "^8.57.0",
-    "eslint-plugin-react-hooks": "^4.6.0",
-    "eslint-plugin-react-refresh": "^0.4.6",
-    "json-schema-to-ts": "^3.1.1",
-    "ts-algebra": "^2.0.0",
-    "tsx": "^4.11.2",
-    "typescript": "^5.4.5",
-    "vite": "^5.2.0"
+  "packageManager": "pnpm@10.6.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
