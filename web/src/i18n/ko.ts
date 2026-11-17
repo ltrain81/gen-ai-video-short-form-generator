@@ -275,5 +275,20 @@ export const ko = {
   mainTrackMagnetic: "메인 트랙은 자동으로 이어 붙습니다",
   lengthHintMedia: "원본 구간이 늘거나 줄어듭니다",
   dragToTimeline: "타임라인이나 미리보기로 끌어다 놓기",
-  dropFilesHint: "파일을 여기로 끌어다 놓아도 됩니다."
+  dropFilesHint: "파일을 여기로 끌어다 놓아도 됩니다.",
+  wHoverToPreview: "마우스를 올리면 미리보기",
+  wPickOrder: "고른 순서도 AI에게 함께 전달됩니다",
+  wCaptionSample: "이 장면 진짜 대박",
+  wStart: "시작",
+  wEnd: "끝",
+  wSetStartHere: "현재 위치를 시작으로",
+  wSetEndHere: "현재 위치를 끝으로",
+  wLength: "길이",
+  wClickFrame: "화면에서 위치를 클릭하세요",
+  wSubmitted: "보냈습니다",
+  wSkip: "건너뛰기",
+  wSkipped: "(건너뜀)",
+  wClips: "{n}개 클립",
+  wReordered: "순서 변경",
+  wEdited: "수정함"
 };

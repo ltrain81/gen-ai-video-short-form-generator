@@ -259,7 +259,7 @@ def op_brand(tl: dict, op: dict, actor: str, assets: dict) -> dict:
                 if it["type"] == "caption" and kit.get("captionPreset"):
                     it["preset"] = kit["captionPreset"]
                 if not is_pinned(tl, f"items/{it['id']}/style"):
-                    it["style"] = {**(it.get("style") or {}), **style}
+                    it["style"] = {**(it.get("style") if isinstance(it.get("style"), dict) else {}), **style}
     relayout(tl)
     return {"added": added}
 
@@ -294,7 +294,7 @@ def op_update(tl: dict, op: dict, actor: str, _assets: dict) -> dict:
         if k in OBJECT_PROPS and v is not None and not isinstance(v, dict):
             raise OpError(f"{k} must be an object (e.g. style: {{size: 0.05, color: '#FFFFFF'}})")
         if k == "style" and isinstance(v, dict) and it.get("type") in {"text", "caption"}:
-            v = {**(it.get("style") or {}), **v}
+            v = {**(it.get("style") if isinstance(it.get("style"), dict) else {}), **v}
         _guard(tl, f"items/{it['id']}/{k}", actor)
         if v is None:
             it.pop(k, None)
@@ -449,7 +449,7 @@ def op_brand(tl: dict, op: dict, actor: str, assets: dict) -> dict:
                 if it["type"] == "caption" and kit.get("captionPreset"):
                     it["preset"] = kit["captionPreset"]
                 if not is_pinned(tl, f"items/{it['id']}/style"):
-                    it["style"] = {**(it.get("style") or {}), **style}
+                    it["style"] = {**(it.get("style") if isinstance(it.get("style"), dict) else {}), **style}
     relayout(tl)
     return {"added": added}
 

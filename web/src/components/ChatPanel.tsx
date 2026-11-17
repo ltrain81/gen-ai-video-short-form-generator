@@ -12,12 +12,12 @@ import TokenGroup from '@cloudscape-design/components/token-group';
 import * as awsui from '@cloudscape-design/design-tokens';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '../api/realtime';
-import type { Asset } from '../api/types';
+import type { Asset, AssetMedia } from '../api/types';
 import AssetPicker from './AssetPicker';
+import ChatWidget, { legacyValue, questionToWidget, type WidgetEntry } from './ChatWidget';
 import { ASSET_MIME } from './TimelineStrip';
 import { uploadAndFetch } from '../api/upload';
 import { useI18n } from '../i18n';
-import { fmtTime } from '../util';
 
 export interface ChatEntry {
   id: string;
@@ -25,6 +25,7 @@ export interface ChatEntry {
   text: string;
   tools?: { name: string; status: string }[];
   question?: Extract<AgentEvent, { type: 'question' }>;
+  widgets?: (WidgetEntry & { legacyKind?: string })[];
   pending?: boolean;
   error?: string;
 }
@@ -38,6 +39,7 @@ interface Props {
   onAnswer: (questionId: string, value: unknown, display: string) => void;
   thumbs: Record<string, string | undefined>;
   titles: Record<string, string>;
+  media?: Record<string, AssetMedia>;
   suggestions?: string[];
   header?: ReactNode;
   projectId?: string;
@@ -60,7 +62,7 @@ const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
   remember: { ko: '선호 저장', en: 'Saving preference' },
 };
 
-export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header, projectId, onError }: Props) {
+export default function ChatPanel({ entries, busy, selectionLabel, onClearSelection, onSend, onAnswer, thumbs, titles, suggestions, header, projectId, onError, media = {} }: Props) {
   const { t } = useI18n();
   const [value, setValue] = useState('');
   const [attach, setAttach] = useState<Asset[]>([]);
@@ -85,7 +87,7 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
     setAttach([]);
   };
   const last = entries[entries.length - 1];
-  const showSuggestions = !busy && !!suggestions?.length && last?.role === 'assistant' && !last.question;
+  const showSuggestions = !busy && !!suggestions?.length && last?.role === 'assistant' && !last.question && !last.widgets?.some((w) => w.spec.interactive && !w.answered);
 
   return (
     <div className={dropOver ? 'drop-zone-active' : undefined} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
@@ -104,7 +106,7 @@ export default function ChatPanel({ entries, busy, selectionLabel, onClearSelect
         )}
         <SpaceBetween size="l">
           {entries.map((e) => (e.role === 'user' ? <UserMessage key={e.id} text={e.text} /> : (
-            <AssistantMessage key={e.id} entry={e} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />
+            <AssistantMessage key={e.id} entry={e} onAnswer={onAnswer} thumbs={thumbs} titles={titles} media={media} />
           )))}
           {busy && !entries.some((e) => e.pending) && (
             <div style={{ display: 'flex', gap: 12 }}>
@@ -153,7 +155,7 @@ function UserMessage({ text }: { text: string }) {
   );
 }
 
-function AssistantMessage({ entry: e, onAnswer, thumbs, titles }: { entry: ChatEntry; onAnswer: Props['onAnswer']; thumbs: Props['thumbs']; titles: Props['titles'] }) {
+function AssistantMessage({ entry: e, onAnswer, thumbs, titles, media }: { entry: ChatEntry; onAnswer: Props['onAnswer']; thumbs: Props['thumbs']; titles: Props['titles']; media: Record<string, AssetMedia> }) {
   const { t, lang } = useI18n();
   const tools = e.tools ?? [];
   const running = tools.find((x) => x.status === 'in_progress');
@@ -174,54 +176,17 @@ function AssistantMessage({ entry: e, onAnswer, thumbs, titles }: { entry: ChatE
           )}
           {e.text && <Markdown text={e.text} />}
           {e.pending && !e.text && !tools.length && <LoadingBar variant="gen-ai" />}
-          {e.question && <QuestionCard q={e.question} onAnswer={onAnswer} thumbs={thumbs} titles={titles} />}
+          {e.question && !e.widgets?.some((w) => w.uiId === e.question!.questionId) && (
+            <ChatWidget w={{ uiId: e.question.questionId, spec: questionToWidget(e.question) }} media={media} thumbs={thumbs} titles={titles}
+              onSubmit={(id, v, display) => onAnswer(id, legacyValue(e.question!.kind, v as Record<string, unknown>), display)} />
+          )}
+          {e.widgets?.map((w) => (
+            <ChatWidget key={w.uiId} w={w} media={media} thumbs={thumbs} titles={titles}
+              onSubmit={(id, v, display) => onAnswer(id, w.legacyKind ? legacyValue(w.legacyKind, v as Record<string, unknown>) : v, display)} />
+          ))}
           {e.error && <StatusIndicator type="error">{e.error}</StatusIndicator>}
         </SpaceBetween>
       </div>
-    </div>
-  );
-}
-
-function QuestionCard({ q, onAnswer, thumbs, titles }: { q: Extract<AgentEvent, { type: 'question' }>; onAnswer: Props['onAnswer']; thumbs: Props['thumbs']; titles: Props['titles'] }) {
-  const { t } = useI18n();
-  const [picked, setPicked] = useState<number[]>([]);
-  const [done, setDone] = useState(false);
-  const answer = (value: unknown, display: string) => { setDone(true); onAnswer(q.questionId, value, display); };
-  return (
-    <div style={{ border: `1px solid ${awsui.colorBorderDividerDefault}`, borderRadius: 6, padding: 14, background: awsui.colorBackgroundContainerContent }}>
-      <SpaceBetween size="s">
-        <Box fontWeight="bold">{q.question}</Box>
-        {q.kind === 'choice' && (
-          <SpaceBetween direction="horizontal" size="xs">
-            {(q.options ?? []).map((o) => <Button key={o} disabled={done} onClick={() => answer(o, o)}>{o}</Button>)}
-          </SpaceBetween>
-        )}
-        {q.kind === 'confirm' && (
-          <SpaceBetween size="xs">
-            {q.estimate && <Box variant="small" color="text-body-secondary">{Object.entries(q.estimate).map(([k, v]) => `${k}: ${v}`).join(' · ')}</Box>}
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="primary" disabled={done} onClick={() => answer(true, t('yes'))}>{t('yes')}</Button>
-              <Button disabled={done} onClick={() => answer(false, t('no'))}>{t('no')}</Button>
-            </SpaceBetween>
-          </SpaceBetween>
-        )}
-        {q.kind === 'clips' && (
-          <SpaceBetween size="xs">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
-              {(q.clips ?? []).map((c, i) => (
-                <div key={i} onClick={() => !done && setPicked(q.multiple ? (picked.includes(i) ? picked.filter((x) => x !== i) : [...picked, i]) : [i])}
-                  style={{ cursor: done ? 'default' : 'pointer', borderRadius: 4, padding: 4, outline: picked.includes(i) ? '2px solid #0972d3' : `1px solid ${awsui.colorBorderDividerDefault}` }}>
-                  {thumbs[c.assetId] ? <img className="thumb" src={thumbs[c.assetId]} alt="" /> : <div className="thumb-placeholder" />}
-                  <Box variant="small" fontWeight="bold">{c.label ?? titles[c.assetId] ?? c.assetId}</Box>
-                  <Box variant="small" color="text-body-secondary">{fmtTime(c.startSec)}–{fmtTime(c.endSec)}</Box>
-                </div>
-              ))}
-            </div>
-            <Button variant="primary" disabled={done || !picked.length}
-              onClick={() => answer(picked.map((i) => q.clips![i]), picked.map((i) => q.clips![i].label ?? `#${i + 1}`).join(', '))}>{t('confirm')}</Button>
-          </SpaceBetween>
-        )}
-      </SpaceBetween>
     </div>
   );
 }

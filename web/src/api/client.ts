@@ -1,7 +1,7 @@
 import { accessToken } from '../auth';
 import { getConfig } from '../config';
 import type { Timeline } from '@shorts/timeline';
-import type { GenJob, Recipe, Skill, BrandKit, BatchInfo, RenderInfo, ChatMessage, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
+import type { GenJob, Recipe, Skill, BrandKit, BatchInfo, RenderInfo, ChatMessage, ChatWidgetHistory, ProjectSummary, Asset, Me, SearchResult, Analysis, AssetMedia, Grant, Collection, Group, TenantUser } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -79,7 +79,7 @@ export const api = {
   versions: (id: string) => call<{ version: number; author: string; message: string; createdAt: number }[]>('GET', `/projects/${id}/versions`),
   restoreVersion: (id: string, version: number) => call<{ currentVersion: number }>('POST', `/projects/${id}/restore`, { version }),
   attachAssets: (id: string, assetIds: string[]) => call<{ assetIds: string[] }>('POST', `/projects/${id}/assets`, { assetIds }),
-  chat: (id: string) => call<{ messages: ChatMessage[]; busy: boolean }>('GET', `/projects/${id}/chat`),
+  chat: (id: string) => call<{ messages: ChatMessage[]; widgets?: ChatWidgetHistory[]; busy: boolean }>('GET', `/projects/${id}/chat`),
   sendChat: (id: string, b: { text?: string; selection?: unknown; answer?: { questionId: string; value: unknown }; attachAssetIds?: string[] }) =>
     call<{ turn: string; channel: string }>('POST', `/projects/${id}/chat`, b),
   recipes: () => call<Recipe[]>('GET', '/recipes'),

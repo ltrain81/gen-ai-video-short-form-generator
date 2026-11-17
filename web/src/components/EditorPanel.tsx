@@ -208,6 +208,8 @@ function TextInspector({ x, set }: { x: TextItem; set: (s: Record<string, unknow
   const { t } = useI18n();
   const [text, setText] = useState(x.text);
   useEffect(() => setText(x.text), [x.id, x.text]);
+  const NAMED: Record<string, number> = { top: 0.18, upper: 0.3, center: 0.5, middle: 0.5, lower: 0.7, bottom: 0.8 };
+  const posY = typeof x.position === 'object' && x.position ? Number(x.position.y ?? 0.2) : NAMED[String(x.position ?? '').toLowerCase()] ?? 0.2;
   return (
     <SpaceBetween size="m">
       <FormField label={t('text')}><Textarea value={text} onChange={(e) => setText(e.detail.value)} onBlur={() => text !== x.text && set({ text }, 'text')} rows={3} /></FormField>
@@ -219,9 +221,9 @@ function TextInspector({ x, set }: { x: TextItem; set: (s: Record<string, unknow
         </FormField>
         <FormField label={t('color')}><CommitInput value={x.style.color ?? '#FFFFFF'} onCommit={(v) => set({ style: { color: v } }, 'text color')} /></FormField>
         <FormField label={t('positionY')}>
-          <Select expandToViewport selectedOption={{ value: String(x.position.y), label: `${Math.round(x.position.y * 100)}%` }}
+          <Select expandToViewport selectedOption={{ value: String(posY), label: `${Math.round(posY * 100)}%` }}
             options={['0.12', '0.2', '0.35', '0.5', '0.65', '0.8'].map((v) => ({ value: v, label: `${Math.round(Number(v) * 100)}%` }))}
-            onChange={(e) => set({ position: { ...x.position, y: Number(e.detail.selectedOption.value) } }, 'text position')} />
+            onChange={(e) => set({ position: { ...(typeof x.position === 'object' ? x.position : {}), x: typeof x.position === 'object' ? x.position.x ?? 0.5 : 0.5, y: Number(e.detail.selectedOption.value) } }, 'text position')} />
         </FormField>
       </ColumnLayout>
     </SpaceBetween>

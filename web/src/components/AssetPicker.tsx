@@ -69,6 +69,11 @@ export default function AssetPicker({ visible, onDismiss, onConfirm, initial = [
     return xs;
   }, [assets, kind, filter, match, kinds]); // eslint-disable-line react-hooks/exhaustive-deps
   const selectable = items.filter((a) => a.status === 'ready');
+  // Clicking anywhere on a card toggles it (not only the checkbox).
+  const toggle = (a: Asset) => {
+    if (a.status !== 'ready') return;
+    setPicked((cur) => cur.some((x) => x.assetId === a.assetId) ? cur.filter((x) => x.assetId !== a.assetId) : [...cur, a]);
+  };
 
   const aiSearch = async () => {
     if (!filter.trim()) { setMatch(null); return; }
@@ -131,10 +136,11 @@ export default function AssetPicker({ visible, onDismiss, onConfirm, initial = [
           cardDefinition={{
             header: (a) => {
               const n = picked.findIndex((x) => x.assetId === a.assetId);
-              return <Box fontWeight="bold" variant="small">{n >= 0 ? `${n + 1}. ` : ''}{a.displayTitle}</Box>;
+              return <div style={{ cursor: a.status === 'ready' ? 'pointer' : 'default' }} onClick={() => toggle(a)}>
+                <Box fontWeight="bold" variant="small">{n >= 0 ? `${n + 1}. ` : ''}{a.displayTitle}</Box></div>;
             },
             sections: [
-              { id: 't', content: (a) => <Thumb asset={a} /> },
+              { id: 't', content: (a) => <div style={{ cursor: a.status === 'ready' ? 'pointer' : 'default' }} onClick={() => toggle(a)}><Thumb asset={a} /></div> },
               { id: 'm', content: (a) => (
                 <SpaceBetween direction="horizontal" size="xs" alignItems="center">
                   {a.status !== 'ready' && <AssetStatus status={a.status} />}

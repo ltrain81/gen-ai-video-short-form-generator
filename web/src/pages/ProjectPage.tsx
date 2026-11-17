@@ -14,7 +14,8 @@ import { useApp } from '../App';
 import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
 import { uploadFile } from '../api/upload';
-import type { Asset, AssetMedia, ChatMessage, ProjectSummary } from '../api/types';
+import type { Asset, AssetMedia, ChatMessage, ChatWidgetHistory, ProjectSummary } from '../api/types';
+import { questionToWidget, widgetAssetIds } from '../components/ChatWidget';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
 import RendersModal from '../components/RendersModal';
@@ -28,8 +29,18 @@ import TimelineStrip from '../components/TimelineStrip';
 import { useI18n } from '../i18n';
 import { fmtTime } from '../util';
 
-function fromHistory(m: ChatMessage[]): ChatEntry[] {
-  return m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, error: x.error }));
+function fromHistory(m: ChatMessage[], widgets: ChatWidgetHistory[] = []): ChatEntry[] {
+  const out: ChatEntry[] = m.map((x, i) => ({ id: `h${i}`, role: x.role, text: x.text, tools: x.tools, error: x.error }));
+  // A widget belongs to the first assistant message saved after it (messages are saved at the end of a turn).
+  for (const w of widgets) {
+    const i = m.findIndex((x) => x.role === 'assistant' && x.createdAt >= w.createdAt);
+    const at = i >= 0 ? i : out.map((x) => x.role).lastIndexOf('assistant');
+    if (at < 0) continue;
+    const entry = w.spec ? { uiId: w.uiId, spec: w.spec, answered: w.answered, answer: w.answer as Record<string, unknown> }
+      : { uiId: w.uiId, spec: questionToWidget(w.question!), answered: w.answered, legacyKind: w.question!.kind };
+    out[at] = { ...out[at], widgets: [...(out[at].widgets ?? []), entry] };
+  }
+  return out;
 }
 
 const SHORTCUTS: [string, string][] = [
@@ -80,9 +91,11 @@ export default function ProjectPage() {
   const clipboard = useRef<{ item: Item; trackId: string } | null>(null);
   const [hasClip, setHasClip] = useState(false);
 
+  const mediaRef = useRef<Set<string>>(new Set());
   const ensureMedia = useCallback(async (ids: string[]) => {
-    const missing = ids.filter((id) => !(id in media));
+    const missing = [...new Set(ids)].filter((id) => id && !mediaRef.current.has(id));
     if (!missing.length) return;
+    missing.forEach((id) => mediaRef.current.add(id));
     const results = await Promise.all(missing.map(async (id) => {
       try {
         const [m, a] = await Promise.all([api.media(id), api.asset(id)]);
@@ -92,7 +105,7 @@ export default function ProjectPage() {
     setMedia((x) => ({ ...x, ...Object.fromEntries(results.filter((r) => r[1]).map((r) => [r[0], r[1]!])) }));
     setTitles((x) => ({ ...x, ...Object.fromEntries(results.map((r) => [r[0], r[2]])) }));
     setThumbs((x) => ({ ...x, ...Object.fromEntries(results.map((r) => [r[0], r[3]])) }));
-  }, [media]);
+  }, []);
 
   const loadProject = useCallback(async () => {
     const r = await api.project(projectId);
@@ -106,7 +119,10 @@ export default function ProjectPage() {
   // Initial load + chat history.
   useEffect(() => {
     loadProject().catch((e) => notify('error', e.message));
-    api.chat(projectId).then((c) => { setEntries(fromHistory(c.messages)); setBusy(c.busy); }).catch(() => undefined);
+    api.chat(projectId).then((c) => {
+      setEntries(fromHistory(c.messages, c.widgets)); setBusy(c.busy);
+      ensureMedia((c.widgets ?? []).flatMap((w) => w.spec ? widgetAssetIds(w.spec) : (w.question?.clips ?? []).map((x) => x.assetId)));
+    }).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -135,6 +151,16 @@ export default function ProjectPage() {
         break;
       case 'question':
         setEntries((x) => x.map((m) => (m.pending ? { ...m, question: e } : m)));
+        ensureMedia((e.clips ?? []).map((c) => c.assetId));
+        break;
+      case 'ui':
+        setEntries((x) => {
+          const w = { uiId: e.uiId, spec: e.spec };
+          const i = x.map((m) => m.pending ? 1 : 0).lastIndexOf(1);
+          if (i >= 0) return x.map((m, j) => j === i ? { ...m, widgets: [...(m.widgets ?? []).filter((y) => y.uiId !== e.uiId), w] } : m);
+          return [...x, { id: e.uiId, role: 'assistant', text: '', widgets: [w] }];
+        });
+        ensureMedia(widgetAssetIds(e.spec));
         break;
       case 'timeline.updated':
         loadProject().catch(() => undefined);
@@ -146,18 +172,12 @@ export default function ProjectPage() {
         loadProject().catch(() => undefined);
         // The saved transcript is authoritative (streamed deltas can be lost or repeated on reconnects).
         api.chat(projectId).then((c) => {
-          setEntries((x) => {
-            const questions = x.filter((m) => m.question);
-            const hist = fromHistory(c.messages);
-            questions.forEach((q) => { const i = hist.findIndex((h) => h.role === 'assistant' && q.text && h.text === q.text); if (i >= 0) hist[i] = { ...hist[i], question: q.question }; });
-            const lastQ = questions[questions.length - 1];
-            if (lastQ && !hist.some((h) => h.question)) { const i = hist.map((h) => h.role).lastIndexOf('assistant'); if (i >= 0) hist[i] = { ...hist[i], question: lastQ.question }; }
-            return hist;
-          });
+          setEntries(fromHistory(c.messages, c.widgets));
+          ensureMedia((c.widgets ?? []).flatMap((w) => w.spec ? widgetAssetIds(w.spec) : (w.question?.clips ?? []).map((x) => x.assetId)));
         }).catch(() => undefined);
         break;
     }
-  }, [loadProject]);
+  }, [loadProject, ensureMedia]);
 
   useEffect(() => {
     if (!me) return;
@@ -447,6 +467,7 @@ export default function ProjectPage() {
         <div className="studio-stage">
           <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id}
             playing={playing} onPlayingChange={setPlaying}
+            editable={!busy && !saving} onOps={applyOps} onSelect={(item, trackId) => setSelected(item ? { item, trackId } : undefined)}
             onDropFiles={busy ? undefined : (f) => dropFiles(f, mainTarget())}
             onDropAsset={busy ? undefined : (raw) => { try { dropAsset(JSON.parse(raw) as DragAsset, mainTarget()); } catch { /* ignore */ } }} />
         </div>
@@ -481,7 +502,7 @@ export default function ProjectPage() {
             <EditorPanel projectId={projectId} timeline={timeline} selected={selected?.item} time={time} titles={titles}
               onOps={applyOps} onRestore={(v) => restore(v)} version={project.currentVersion} disabled={busy || saving} />
           </>
-        ) : <ChatPanel entries={entries} busy={busy} onSend={send} projectId={projectId} onError={(m) => notify('error', m)} onAnswer={answer} thumbs={thumbs} titles={titles}
+        ) : <ChatPanel entries={entries} busy={busy} onSend={send} projectId={projectId} media={media} onError={(m) => notify('error', m)} onAnswer={answer} thumbs={thumbs} titles={titles}
           suggestions={suggestions} selectionLabel={selLabel} onClearSelection={() => setSelected(undefined)}
           header={
             <div style={{ padding: '14px 20px', borderBottom: divider }}>

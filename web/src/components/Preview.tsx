@@ -4,7 +4,7 @@ import SpaceBetween from '@cloudscape-design/components/space-between';
 import Toggle from '@cloudscape-design/components/toggle';
 import type { CaptionItem, ClipItem, Item, TextItem, Timeline } from '@shorts/timeline';
 import { sampleKeyframes, timelineDuration } from '@shorts/timeline';
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, PointerEvent as RPointerEvent, WheelEvent as RWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetMedia } from '../api/types';
 import { fmtTime } from '../util';
 
@@ -24,7 +24,25 @@ interface Props {
   onPlayingChange?: (v: boolean) => void;
   onDropFiles?: (files: File[]) => void;
   onDropAsset?: (raw: string) => void;
+  /** Direct manipulation on the canvas (select / move / resize / edit text). */
+  editable?: boolean;
+  onOps?: (ops: Record<string, unknown>[], message: string) => void;
+  onSelect?: (item: Item | undefined, trackId?: string) => void;
 }
+
+type Guide = { axis: 'x' | 'y'; at: number };
+type CanvasDrag = {
+  id: string; trackId: string; kind: 'text' | 'caption' | 'pip' | 'main'; mode: 'move' | 'size' | 'width' | 'pan';
+  x0: number; y0: number; moved: boolean; orig: Item;
+};
+const SNAP = 0.015;
+const SNAP_X = [0.5, 0.06, 0.82];
+const SNAP_Y = [0.5, 0.12, 0.8];
+function snap1(v: number, targets: number[]): { v: number; hit?: number } {
+  for (const t of targets) if (Math.abs(v - t) < SNAP) return { v: t, hit: t };
+  return { v };
+}
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 // Same tolerant reading as the server renderer (older timelines may hold named positions / non-object styles).
 const NAMED_Y: Record<string, number> = { top: 0.18, upper: 0.3, center: 0.5, middle: 0.5, lower: 0.7, bottom: 0.8 };
@@ -67,7 +85,17 @@ function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain'): CSSPrope
   };
 }
 
-export default function Preview({ timeline, media, time, onTime, selectedId, playing: playingProp, onPlayingChange, onDropFiles, onDropAsset }: Props) {
+export default function Preview({ timeline: timelineIn, media, time, onTime, selectedId, playing: playingProp, onPlayingChange, onDropFiles, onDropAsset,
+  editable, onOps, onSelect }: Props) {
+  // Live overrides while dragging on the canvas; cleared when the saved timeline comes back.
+  const [ov, setOv] = useState<Record<string, Partial<Item>>>({});
+  useEffect(() => { setOv({}); }, [timelineIn]);
+  const timeline = useMemo<Timeline>(() => (Object.keys(ov).length ? {
+    ...timelineIn, tracks: timelineIn.tracks.map((tr) => ({ ...tr, items: tr.items.map((i) => (ov[i.id] ? ({ ...i, ...ov[i.id] } as Item) : i)) })),
+  } : timelineIn), [timelineIn, ov]);
+  const [guides, setGuides] = useState<Guide[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const dragRef = useRef<CanvasDrag | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLVideoElement>(null);
@@ -157,6 +185,126 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
   }, [playing, duration]);
 
   const scale = stageW / width;
+  const stageH = (stageW * height) / width;
+  const ovRef = useRef(ov);
+  ovRef.current = ov;
+  const zoomTimer = useRef<number>(undefined);
+  const trackOf = (id: string) => timelineIn.tracks.find((tr) => tr.items.some((i) => i.id === id))?.id ?? '';
+  const findOrig = (id: string) => timelineIn.tracks.flatMap((tr) => tr.items).find((i) => i.id === id);
+  const canEdit = !!editable && !!onOps;
+  const setOne = (id: string, patch: Partial<Item>) => { const n = { [id]: patch }; ovRef.current = n; setOv(n); };
+
+  const beginDrag = (e: RPointerEvent, item: Item, kind: CanvasDrag['kind'], mode: CanvasDrag['mode']) => {
+    if (e.button !== 0 || editingId) return;
+    e.stopPropagation();
+    const orig = findOrig(item.id) ?? item;
+    onSelect?.(orig, trackOf(item.id));
+    if (!canEdit) return;
+    if (playing) setPlaying(false);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { id: item.id, trackId: trackOf(item.id), kind, mode, x0: e.clientX, y0: e.clientY, moved: false, orig };
+  };
+
+  /** Pan the crop focus of the main clip (shifts every point of the reframe path, so auto-tracking is kept). */
+  const panPatch = (c: ClipItem, dxPx: number, dyPx: number, zoomK = 1): Partial<Item> | null => {
+    const r = (c.reframe ?? {}) as ReframeValue;
+    const layout = r.layout ?? 'crop';
+    if (layout !== 'crop' && layout !== 'split') return null;
+    const m = media[c.assetId];
+    const boxH = layout === 'split' ? stageH / 2 : stageH;
+    const srcAR = (m?.width ?? width) / (m?.height ?? height);
+    const rw = srcAR > stageW / boxH ? boxH * srcAR : stageW;
+    const rh = srcAR > stageW / boxH ? boxH : stageW / srcAR;
+    const base = r.path?.length ? r.path : [{ t: c.srcIn, x: c.transform?.x ?? 0.5, y: c.transform?.y ?? 0.5, scale: c.transform?.scale ?? 1 }];
+    const ddx = rw - stageW > 1 ? -dxPx / (rw - stageW) : 0;
+    const ddy = rh - boxH > 1 ? -dyPx / (rh - boxH) : 0;
+    const path = base.map((q) => ({ ...q, x: +clamp01(q.x + ddx).toFixed(4), y: +clamp01(q.y + ddy).toFixed(4),
+      scale: +Math.min(3, Math.max(1, (q.scale ?? 1) * zoomK)).toFixed(3) }));
+    return { reframe: { ...r, layout, mode: r.mode ?? 'manual', path } } as Partial<Item>;
+  };
+
+  const onDragMove = (e: RPointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dxPx = e.clientX - d.x0, dyPx = e.clientY - d.y0;
+    if (!d.moved && Math.hypot(dxPx, dyPx) < 3) return;
+    d.moved = true;
+    const dx = dxPx / stageW, dy = dyPx / stageH;
+    const o = d.orig as unknown as Record<string, unknown>;
+    const g: Guide[] = [];
+    if (d.kind === 'text' || d.kind === 'caption') {
+      const pos = asPos(o.position, d.kind === 'text' ? 0.2 : 0.75);
+      const st = asObj<TextItem['style']>(o.style);
+      if (d.mode === 'move') {
+        const sy = snap1(clamp01(pos.y + dy), SNAP_Y);
+        if (sy.hit != null) g.push({ axis: 'y', at: sy.hit });
+        if (d.kind === 'text') {
+          const sx = snap1(clamp01(pos.x + dx), SNAP_X);
+          if (sx.hit != null) g.push({ axis: 'x', at: sx.hit });
+          setOne(d.id, { position: { ...asObj(o.position), ...pos, x: +sx.v.toFixed(4), y: +sy.v.toFixed(4) } } as Partial<Item>);
+        } else setOne(d.id, { position: { ...asObj(o.position), y: +sy.v.toFixed(4) } } as Partial<Item>);
+      } else if (d.mode === 'size') {
+        const size0 = Number(st.size) || (d.kind === 'text' ? 0.05 : 0.045);
+        const k = Math.max(0.2, 1 + (dx + dy) * 1.5);
+        setOne(d.id, { style: { ...st, size: +Math.min(0.3, Math.max(0.015, size0 * k)).toFixed(4) } } as Partial<Item>);
+      } else if (d.mode === 'width') {
+        const mw = Number(pos.maxWidth ?? 0.86);
+        setOne(d.id, { position: { ...asObj(o.position), ...pos, maxWidth: +Math.min(1, Math.max(0.15, mw + dx * 2)).toFixed(3) } } as Partial<Item>);
+      }
+    } else if (d.kind === 'pip') {
+      const tf = { x: 0.5, y: 0.5, scale: 1, rotation: 0, ...asObj<NonNullable<ClipItem['transform']>>(o.transform) };
+      if (d.mode === 'move') {
+        const sx = snap1(clamp01(Number(tf.x) + dx), SNAP_X), sy = snap1(clamp01(Number(tf.y) + dy), SNAP_Y);
+        if (sx.hit != null) g.push({ axis: 'x', at: sx.hit });
+        if (sy.hit != null) g.push({ axis: 'y', at: sy.hit });
+        setOne(d.id, { transform: { ...tf, x: +sx.v.toFixed(4), y: +sy.v.toFixed(4) } } as Partial<Item>);
+      } else {
+        const sc = Math.min(1, Math.max(0.05, Number(tf.scale) * (1 + dx * 2)));
+        setOne(d.id, { transform: { ...tf, scale: +sc.toFixed(3) } } as Partial<Item>);
+      }
+    } else if (d.kind === 'main') {
+      const patch = panPatch(d.orig as ClipItem, dxPx, dyPx);
+      if (patch) setOne(d.id, patch);
+    }
+    setGuides(g);
+  };
+
+  const commit = (id: string, kind: CanvasDrag['kind'], patch: Partial<Item>) => {
+    const set: Record<string, unknown> = {};
+    for (const k of ['position', 'style', 'transform', 'reframe'] as const) if (k in patch) set[k] = (patch as Record<string, unknown>)[k];
+    if (!Object.keys(set).length) return;
+    const what = 'reframe' in set ? 'reframe' : 'transform' in set ? 'overlay position' : 'style' in set ? `${kind} size` : `${kind} position`;
+    onOps?.([{ op: 'update', itemId: id, set }], what);
+  };
+  const onDragEnd = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setGuides([]);
+    if (!d || !d.moved) return;
+    const patch = ovRef.current[d.id];
+    if (patch) commit(d.id, d.kind, patch);
+  };
+  const onStageWheel = (e: RWheelEvent) => {
+    if (!canEdit || !(e.ctrlKey || e.metaKey) || mainItem?.mediaKind !== 'video') return;
+    e.preventDefault();
+    const cur = (ovRef.current[mainItem.id] ? { ...mainItem, ...ovRef.current[mainItem.id] } : mainItem) as ClipItem;
+    const patch = panPatch(cur, 0, 0, e.deltaY < 0 ? 1.06 : 1 / 1.06);
+    if (!patch) return;
+    setOne(mainItem.id, patch);
+    window.clearTimeout(zoomTimer.current);
+    zoomTimer.current = window.setTimeout(() => commit(mainItem.id, 'main', patch), 450);
+  };
+  const handles = (item: Item, kind: CanvasDrag['kind'], width?: boolean) => (!canEdit || selectedId !== item.id || editingId === item.id ? null : <>
+    <span className="cv-handle br" title="resize" onPointerDown={(e) => beginDrag(e, item, kind, 'size')} />
+    {width && <span className="cv-handle mr" title="wrap width" onPointerDown={(e) => beginDrag(e, item, kind, 'width')} />}
+  </>);
+  const startEdit = (x: TextItem) => { if (canEdit) { setPlaying(false); setEditingId(x.id); } };
+  const finishEdit = (x: TextItem, el: HTMLElement, save: boolean) => {
+    setEditingId(null);
+    const text = el.innerText.replace(/\n+$/, '');
+    if (save && text.trim() && text !== x.text) onOps?.([{ op: 'update', itemId: x.id, set: { text } }], 'edit text');
+    else el.innerText = x.text;
+  };
   const imageEl = (c: ClipItem) => {
     const m = media[c.assetId];
     const url = c.page != null && m?.pages ? m.pages.find((p) => p.index === c.page)?.url : (m?.imageUrl ?? m?.thumbnailUrl);
@@ -166,6 +314,15 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
     const x = kb ? kb.from.x + (kb.to.x - kb.from.x) * u : 0.5;
     const y = kb ? kb.from.y + (kb.to.y - kb.from.y) * u : 0.5;
     return url ? <img src={url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${s})`, transformOrigin: `${x * 100}% ${y * 100}%` }} /> : null;
+  };
+  /** Overlay clips scaled below full frame render as positioned boxes (picture-in-picture), like the renderer. */
+  const pipBox = (o: ClipItem): CSSProperties | null => {
+    const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform);
+    const sc = Number(tf.scale ?? 1);
+    if (sc >= 0.999) return null;
+    return { position: 'absolute', width: `${sc * 100}%`, height: 'auto', aspectRatio: `${media[o.assetId]?.width ?? 16} / ${media[o.assetId]?.height ?? 9}`,
+      left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`, transform: 'translate(-50%, -50%)', objectFit: 'cover', opacity: o.opacity ?? 1,
+      cursor: canEdit ? 'move' : 'pointer' };
   };
   const mainLayout = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
   // Mirrors the server renderer's layouts: fit_blur = blurred cover fill + contained frame;
@@ -196,13 +353,28 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
             const raw = e.dataTransfer.getData('application/x-shorts-asset');
             if (raw) onDropAsset?.(raw); else if (e.dataTransfer.files.length) onDropFiles?.([...e.dataTransfer.files]);
           }}
-          style={{ position: 'relative', width: stageW, height: (stageW * height) / width, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4 }}>
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            const ovFull = overlayItem && Number(asObj<NonNullable<ClipItem['transform']>>(overlayItem.transform).scale ?? 1) >= 0.999 ? overlayItem : undefined;
+            if (ovFull) { beginDrag(e, ovFull, 'pip', 'move'); return; }
+            if (mainItem) beginDrag(e, mainItem, 'main', 'pan'); else onSelect?.(undefined);
+          }}
+          onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={() => { dragRef.current = null; setGuides([]); setOv({}); }}
+          onWheel={onStageWheel}
+          style={{ position: 'relative', width: stageW, height: stageH, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4,
+            cursor: canEdit && mainItem?.mediaKind === 'video' ? 'grab' : undefined, touchAction: canEdit ? 'none' : undefined, outline: selectedId && selectedId === mainItem?.id ? '2px solid #22d3ee' : undefined, outlineOffset: -2 }}>
           <video ref={auxRef} muted playsInline preload="auto" style={mainItem?.mediaKind === 'video' ? auxStyle : { display: 'none' }} />
           <video ref={mainRef} muted={main?.muted} playsInline preload="auto"
             style={mainItem?.mediaKind === 'video' ? mainStyle(mainItem) : { display: 'none' }} />
           {mainItem?.mediaKind === 'image' && imageEl(mainItem)}
           <video ref={overlayRef} muted playsInline preload="auto"
-            style={overlayItem?.mediaKind === 'video' ? mediaStyle(overlayItem, srcTime(overlayItem, time), 'cover') : { display: 'none' }} />
+            onPointerDown={(e) => overlayItem && pipBox(overlayItem) && beginDrag(e, overlayItem, 'pip', 'move')}
+            style={overlayItem?.mediaKind === 'video' ? (pipBox(overlayItem) ?? mediaStyle(overlayItem, srcTime(overlayItem, time), 'cover')) : { display: 'none' }} />
+          {overlayItem?.mediaKind === 'video' && pipBox(overlayItem) && (
+            <div style={{ ...pipBox(overlayItem)!, pointerEvents: 'none', outline: selectedId === overlayItem.id ? '2px solid #22d3ee' : undefined }}>
+              <div style={{ pointerEvents: 'auto' }}>{handles(overlayItem, 'pip')}</div>
+            </div>
+          )}
           {overlay?.items.filter((o) => o.type === 'clip' && time >= o.start && time < o.start + o.duration).map((o0) => {
             const o = o0 as ClipItem;
             const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform);
@@ -210,15 +382,22 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
             if (o.mediaKind !== 'image') return null;
             if (sc >= 0.999 && !o.transform) return <div key={o.id} style={{ position: 'absolute', inset: 0 }}>{imageEl(o)}</div>;
             const m = media[o.assetId];
-            return <img key={o.id} src={m?.imageUrl ?? m?.thumbnailUrl} alt="" style={{
-              position: 'absolute', width: `${sc * 100}%`, left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`,
-              transform: 'translate(-50%, -50%)', opacity: o.opacity ?? 1, objectFit: 'contain' }} />;
+            return (
+              <div key={o.id} onPointerDown={(e) => beginDrag(e, o, 'pip', 'move')}
+                style={{ position: 'absolute', width: `${sc * 100}%`, left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`,
+                  transform: 'translate(-50%, -50%)', cursor: canEdit ? 'move' : 'pointer', outline: selectedId === o.id ? '2px solid #22d3ee' : undefined }}>
+                <img src={m?.imageUrl ?? m?.thumbnailUrl} alt="" draggable={false} style={{ width: '100%', display: 'block', opacity: o.opacity ?? 1, objectFit: 'contain', pointerEvents: 'none' }} />
+                {handles(o, 'pip')}
+              </div>
+            );
           })}
           <audio ref={musicRef} preload="auto" />
           {texts.filter((x) => time >= x.start && time < x.start + x.duration).map((x0) => {
             const x = { ...x0, position: asPos(x0.position, 0.2), style: { size: 0.05, weight: 800, color: '#FFFFFF', ...asObj<TextItem['style']>(x0.style) } as TextItem['style'] };
             return (
-            <div key={x.id} style={{
+            <div key={x.id} onPointerDown={(e) => beginDrag(e, x0, 'text', 'move')} onDoubleClick={() => startEdit(x0)}
+              title={canEdit ? '드래그: 이동 · 더블클릭: 글자 수정 / Drag: move · Double-click: edit' : undefined}
+              style={{ cursor: canEdit ? (editingId === x.id ? 'text' : 'move') : 'pointer', touchAction: 'none',
               position: 'absolute', left: `${(x.position?.x ?? 0.5) * 100}%`, top: `${(x.position?.y ?? 0.2) * 100}%`, transform: 'translate(-50%, -50%)',
               width: `${(x.position?.maxWidth ?? 0.86) * 100}%`, textAlign: x.style.align ?? 'center', color: x.style.color ?? '#fff',
               fontSize: (Number(x.style.size) || 0.05) * height * scale, fontWeight: x.style.weight ?? 800, lineHeight: 1.15, whiteSpace: 'pre-line',
@@ -226,13 +405,27 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
               background: x.style.background, padding: x.style.background ? '0.15em 0.4em' : 0, borderRadius: 3,
               WebkitTextStroke: x.style.stroke ? `${x.style.stroke.width * height * scale}px ${x.style.stroke.color}` : undefined,
               paintOrder: 'stroke fill', textTransform: x.style.uppercase ? 'uppercase' : 'none',
-              outline: x.id === selectedId ? '2px dashed #22d3ee' : undefined,
-            }}>{x.text}</div>
+              outline: x.id === selectedId ? '2px dashed #22d3ee' : undefined, outlineOffset: 4,
+            }}>
+              {editingId === x.id ? (
+                <span contentEditable suppressContentEditableWarning className="cv-edit"
+                  ref={(el) => { if (el && document.activeElement !== el) { el.focus(); const r = document.createRange(); r.selectNodeContents(el); const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(r); } }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onBlur={(e) => finishEdit(x0, e.currentTarget, true)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); }
+                    if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.innerText = x0.text; e.currentTarget.blur(); }
+                  }}>{x.text}</span>
+              ) : x.text}
+              {handles(x0, 'text', true)}
+            </div>
           ); })}
           {captions.filter((c) => time >= c.start && time < c.start + c.duration).map((c0) => {
             const c = { ...c0, position: asPos(c0.position, 0.75), style: { size: 0.045, weight: 800, color: '#FFFFFF', ...asObj<CaptionItem['style']>(c0.style) } as CaptionItem['style'] };
             return (
-            <div key={c.id} style={{
+            <div key={c.id} onPointerDown={(e) => beginDrag(e, c0, 'caption', 'move')}
+              style={{ cursor: canEdit ? 'ns-resize' : 'pointer', touchAction: 'none', outline: c.id === selectedId ? '2px dashed #22d3ee' : undefined, outlineOffset: 4,
               position: 'absolute', left: '7%', right: '7%', top: `${c.position.y * 100}%`, transform: 'translateY(-50%)', textAlign: 'center',
               fontSize: (Number(c.style.size) || 0.045) * height * scale, fontWeight: c.style.weight ?? 800, color: c.style.color, lineHeight: 1.2,
               fontFamily: `${c.style.font}, Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif`,
@@ -245,8 +438,14 @@ export default function Preview({ timeline, media, time, onTime, selectedId, pla
                   <span key={i} style={{ color: c.style.highlightColor && time >= w.s && time < w.e ? c.style.highlightColor : undefined }}>{w.w} </span>
                 ))}
               </span>
+              {handles(c0, 'caption')}
             </div>
           ); })}
+          {guides.map((g) => (
+            <div key={`${g.axis}${g.at}`} style={g.axis === 'x'
+              ? { position: 'absolute', top: 0, bottom: 0, left: `${g.at * 100}%`, width: 1, background: '#ff2d95', pointerEvents: 'none', zIndex: 20 }
+              : { position: 'absolute', left: 0, right: 0, top: `${g.at * 100}%`, height: 1, background: '#ff2d95', pointerEvents: 'none', zIndex: 20 }} />
+          ))}
           {safe && timeline.settings.safeZone && timeline.settings.safeZone !== 'none' && (
             <div style={{ position: 'absolute', left: '6%', right: '18%', top: '12%', bottom: '20%', border: '1px dashed rgba(255,255,255,0.35)', pointerEvents: 'none' }} />
           )}

@@ -277,5 +277,20 @@ export const en: typeof ko = {
   "mainTrackMagnetic": "The main track is magnetic",
   "lengthHintMedia": "Extends or shortens the source range",
   "dragToTimeline": "Drag onto the timeline or preview",
-  "dropFilesHint": "You can also drop files here."
+  "dropFilesHint": "You can also drop files here.",
+  "wHoverToPreview": "Hover to preview",
+  "wPickOrder": "Your pick order is sent too",
+  "wCaptionSample": "This moment is huge",
+  "wStart": "Start",
+  "wEnd": "End",
+  "wSetStartHere": "Set start here",
+  "wSetEndHere": "Set end here",
+  "wLength": "Length",
+  "wClickFrame": "Click a point on the frame",
+  "wSubmitted": "Sent",
+  "wSkip": "Skip",
+  "wSkipped": "(skipped)",
+  "wClips": "{n} clips",
+  "wReordered": "reordered",
+  "wEdited": "edited"
 };

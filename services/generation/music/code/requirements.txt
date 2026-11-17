@@ -1,1 +1,2 @@
-ace-step==0.1.0
+# PyPI ace-step 0.1.0 ships a broken sdist (no requirements.txt); install the pinned upstream commit, hash-checked.
+ace-step @ https://github.com/ace-step/ACE-Step/archive/1bee4c9f5b43e30995f8d4d33b3919197ce1bd68.tar.gz#sha256=37fc6d0743d8e9266ce62522f581ba9ed24e2c49e4a04a34ff16004d99f5adb5

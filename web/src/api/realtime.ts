@@ -8,7 +8,8 @@ export type AgentEvent =
   | { type: 'timeline.updated'; version: number; message?: string }
   | { type: 'question'; questionId: string; question: string; kind: 'text' | 'choice' | 'clips' | 'confirm' | 'range';
       options?: string[]; clips?: { assetId: string; startSec: number; endSec: number; label?: string }[];
-      multiple?: boolean; estimate?: Record<string, unknown> };
+      multiple?: boolean; estimate?: Record<string, unknown> }
+  | { type: 'ui'; uiId: string; spec: import('../components/ChatWidget').WidgetSpec; createdAt: number };
 
 /** Subscribe to this user's project channel. Returns an unsubscribe function. */
 export async function subscribeProject(projectId: string, sub: string, onEvent: (e: AgentEvent) => void): Promise<() => void> {

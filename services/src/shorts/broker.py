@@ -50,7 +50,10 @@ def messages(project_id: str, limit: int = 200) -> list[dict]:
 def compose_input(text: str, selection: dict | None, answer: dict | None) -> str:
     parts = []
     if answer:
-        parts.append(f"[Answer to question {answer.get('questionId')}]: {json.dumps(answer.get('value'), ensure_ascii=False)}")
+        qid = str(answer.get('questionId') or '')
+        label = "UI" if qid.startswith("u") else "Answer to question"
+        verb = " submitted" if qid.startswith("u") else ""
+        parts.append(f"[{label} {qid}{verb}]: {json.dumps(answer.get('value'), ensure_ascii=False)}")
     if selection:
         parts.append("[The user has selected in the editor]: " + json.dumps(selection, ensure_ascii=False))
     parts.append(text)

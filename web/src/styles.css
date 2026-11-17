@@ -49,3 +49,7 @@ body { margin: 0; }
 .tl-handle.r { right: 0; border-radius: 0 3px 3px 0; }
 .tl-item:hover .tl-handle, .tl-handle.on { opacity: 1; }
 .tl-speed { position: absolute; right: 9px; top: 1px; font-size: 9px; line-height: 12px; background: rgba(0,0,0,0.45); padding: 0 4px; border-radius: 3px; }
+.cv-handle { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #22d3ee; border-radius: 3px; z-index: 30; touch-action: none; }
+.cv-handle.br { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.cv-handle.mr { right: -8px; top: 50%; margin-top: -6px; cursor: ew-resize; border-radius: 6px; }
+.cv-edit { outline: none; background: rgba(0,0,0,0.25); caret-color: #22d3ee; cursor: text; }

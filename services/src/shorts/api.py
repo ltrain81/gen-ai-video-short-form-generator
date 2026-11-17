@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, broker, ddb, ingest, projects, recipes, search, storage
+from . import acl, broker, ddb, ingest, projects, recipes, search, storage, ui_widgets
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
@@ -853,7 +853,7 @@ def put_project_grant(req: Request):
 def chat_history(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
     busy = project.get("agentBusy")
-    return {"messages": broker.messages(project["projectId"]),
+    return {"messages": broker.messages(project["projectId"]), "widgets": ui_widgets.history(project["projectId"]),
             "busy": bool(busy and busy.get("until", 0) > ddb.now_ms())}
 
 
@@ -866,6 +866,8 @@ def chat_send(req: Request):
     answer = req.body.get("answer")  # {questionId, value}
     if not text and not answer:
         raise BadRequest("text or answer required")
+    if answer and answer.get("questionId"):
+        ui_widgets.answer(project["projectId"], str(answer["questionId"]), answer.get("value"))
     attached: list[str] = []
     if req.body.get("attachAssetIds"):
         requested = [str(a) for a in req.body["attachAssetIds"]][:50]

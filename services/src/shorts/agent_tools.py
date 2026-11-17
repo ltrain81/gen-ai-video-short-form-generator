@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import acl, ddb, events, frames, ingest, models, projects, recipes, search, storage, timeline_ops
+from . import acl, ddb, events, frames, ingest, models, projects, recipes, search, storage, timeline_ops, ui_widgets
 from .auth import Principal
 from .config import get_config
 
@@ -414,6 +414,40 @@ def ask_user(ctx: ToolContext, args: dict) -> ToolResult:
     _publish(ctx, q)
     return ToolResult({"questionId": qid, "status": "shown to user",
                        "instruction": "End your turn now. The answer arrives as the next user message."})
+
+
+@tool("show_ui",
+      "Show an interactive widget in the chat (rendered by the app; no HTML). Prefer this over plain-text questions "
+      "whenever the user should SEE or PICK something: candidate clips (thumbnails + playable ranges), A/B versions, "
+      "styles, lengths, colors, ordering, a point on a frame, a time range, proofreading lines. Compose up to 12 blocks; "
+      "every input block needs a stable `id` — the answer arrives as the next user message "
+      "'[UI <uiId> submitted]: {blockId: value, ...}'. If any block takes input, END YOUR TURN after calling this. "
+      "Display-only widgets (markdown/kv/table/media/timeline) do not end the turn. Block types: "
+      "markdown{text} · kv{items:[{label,value}]} · table{columns:[str], rows:[[...]], selectable?, multiple?} · "
+      "media{assetId, startSec?, endSec?, caption?} · timeline{segments:[{assetId,startSec,endSec,label}]} (proposed edit) · "
+      "choice{label, options:[{value,label,description?,assetId?,startSec?,endSec?,color?}], multiple?, style?:'buttons'|'cards'|'list'} · "
+      "clips{label, clips:[{assetId,startSec,endSec,label?,reason?,score?}], multiple?, min?, max?} · "
+      "compare{label, options:[{value,label,assetId,startSec?,endSec?,description?}]} (side-by-side, pick one) · "
+      "slider{label,min,max,step?,default?,unit?} · range{label,assetId,startSec,endSec,min?,max?} (trim on a player) · "
+      "text_input{label,placeholder?,default?,multiline?} · select{label,options:[{value,label}],default?} · "
+      "toggle{label,default?} · color{label,default?,swatches?:[hex]} · order{label,items:[{value,label,assetId?,startSec?,endSec?}]} (drag to reorder) · "
+      "frame_point{label,assetId,atSec} (user clicks a point → {x,y} 0..1, e.g. subject or logo position) · "
+      "assets{label,kinds?:[video|image|audio|document],multiple?} (pick from the archive) · "
+      "caption_style{label,default?,sample?} (visual preset picker) · text_list{label,items:[{id,text,startSec?}]} (edit lines) · "
+      "rating{label,max?}. Always include assetId on every clip/option/segment that has times. Top level: {title?, description?, blocks, submitLabel?, allowSkip?}.",
+      {"title": {"type": "string"}, "description": {"type": "string"},
+       "blocks": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+       "submitLabel": {"type": "string"}, "allowSkip": {"type": "boolean"}}, ["blocks"])
+def show_ui(ctx: ToolContext, args: dict) -> ToolResult:
+    project = ddb.get(f"PROJ#{ctx.project_id}", "META") or {}
+    ids = project.get("assetIds") or []
+    spec = ui_widgets.validate(args, ctx.principal, ids[0] if len(ids) == 1 else None)
+    item = ui_widgets.create(ctx.project_id, spec)
+    _publish(ctx, {"type": "ui", "uiId": item["uiId"], "spec": spec, "createdAt": item["createdAt"]})
+    if spec["interactive"]:
+        return ToolResult({"uiId": item["uiId"], "status": "shown to user",
+                           "instruction": "End your turn now. The user's input arrives as the next user message."})
+    return ToolResult({"uiId": item["uiId"], "status": "shown"})
 
 
 @tool("remember", "Save a durable preference of this user (e.g. caption style, default length, tone) for future "
