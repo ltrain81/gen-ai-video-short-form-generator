@@ -245,3 +245,16 @@ def framing_plan(images: list[bytes], times: list[float], aspect: str, intent: s
              "zoom": clamp(f.get("zoom"), 1, 1.6, 1.0),
              "layout": f.get("layout") if f.get("layout") in {"crop", "split", "fit_blur", "letterbox"} else "crop",
              "subject": str(f.get("subject", ""))[:80]} for f in frames]
+
+
+def describe_frames(images: list[bytes], context: str = "", language: str = "English") -> str:
+    """Text description of frames, for orchestrators that cannot take images in tool results."""
+    content: list[dict] = [{"image": {"format": "jpeg", "source": {"bytes": img}}} for img in images[:4]]
+    content.append({"text": (
+        "You are assisting a video editor. Describe these frames precisely and compactly: composition, subjects and "
+        "where they are in frame (left/center/right, top/bottom), on-screen text verbatim, action and visual energy, "
+        "and whether a vertical crop would lose important content. " + (f"Context: {context}. " if context else "")
+        + f"Answer in {language}.")})
+    resp = runtime().converse(modelId=get_config().vision_model_id, messages=[{"role": "user", "content": content}],
+                              inferenceConfig={"maxTokens": 900})
+    return "".join(c.get("text", "") for c in resp["output"]["message"]["content"]).strip()

@@ -38,8 +38,13 @@ def _tools(ctx: agent_tools.ToolContext, relay) -> list:
             relay.emit({"type": "tool", "name": name, "status": "in_progress"})
             try:
                 res = agent_tools.run(ctx, name, tool_use.get("input") or {})
-                content = [{"text": json.dumps(res.data, ensure_ascii=False, default=str)}]
-                content += [{"image": {"format": "jpeg", "source": {"bytes": img}}} for img in res.images or []]
+                data = res.data
+                if res.images:
+                    # Converse does not accept images inside tool results for this model family: describe them.
+                    from . import models
+                    data = {"result": data, "frames_description": models.describe_frames(
+                        res.images, json.dumps(data, ensure_ascii=False, default=str)[:500])}
+                content = [{"text": json.dumps(data, ensure_ascii=False, default=str)}]
                 relay.tools.append({"name": name, "status": "completed"})
                 relay.emit({"type": "tool", "name": name, "status": "completed"})
                 return {"toolUseId": tool_use["toolUseId"], "status": "success", "content": content}

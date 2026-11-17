@@ -39,6 +39,12 @@ is inspectable, every property is editable, and your manual edits are pinned so 
 
 ## Architecture
 
+![AWS Shorts V2 architecture](docs/architecture/architecture.png)
+
+<sub>Generated from [`docs/architecture/diagram.py`](docs/architecture/diagram.py) (`diagrams` + Graphviz, official AWS Architecture Icons). Regenerate: `uv run --with diagrams python docs/architecture/diagram.py`.</sub>
+
+Request flow in short:
+
 ```
 Browser (React + Cloudscape, CloudFront)
   ├─ REST ─▶ API Gateway (Cognito JWT) ─▶ API Lambda ─▶ DynamoDB · S3 · S3 Vectors · Bedrock
