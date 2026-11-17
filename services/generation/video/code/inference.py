@@ -41,4 +41,5 @@ def predict_fn(req, pipes):
 
 
 def output_fn(data, accept):
-    return data, "video/mp4"
+    # The model server only accepts bytes/str here (a (body, type) tuple fails with "Unsupported model output data type").
+    return data

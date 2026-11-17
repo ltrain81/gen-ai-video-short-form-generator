@@ -32,7 +32,7 @@ KINDS = {
     "image_edit": {"model": "Qwen/Qwen-Image-Edit-2509", "ext": "png", "warm": 150, "cold": 900, "instance": "ml.g6e.4xlarge", "usd_h": 3.80},
     "video": {"model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "ext": "mp4", "warm": 420, "cold": 720, "instance": "ml.g6e.2xlarge", "usd_h": 2.75},
     "speech": {"model": "openbmb/VoxCPM2", "ext": "wav", "warm": 25, "cold": 420, "instance": "ml.g6.xlarge", "usd_h": 1.01},
-    "music": {"model": "ACE-Step", "ext": "wav", "warm": 90, "cold": 600, "instance": "ml.g5.2xlarge", "usd_h": 1.52},
+    "music": {"model": "ACE-Step", "ext": "wav", "warm": 90, "cold": 600, "instance": "ml.g5.xlarge", "usd_h": 1.41},
 }
 ENDPOINT_SUFFIX = {"image": "image", "image_edit": "image-edit", "video": "video", "speech": "tts", "music": "music"}
 POLL_DELAY = 30

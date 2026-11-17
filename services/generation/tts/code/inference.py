@@ -26,4 +26,5 @@ def predict_fn(req, model):
 
 
 def output_fn(data, accept):
-    return data, "audio/wav"
+    # The model server only accepts bytes/str here (a (body, type) tuple fails with "Unsupported model output data type").
+    return data

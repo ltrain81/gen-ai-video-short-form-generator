@@ -23,4 +23,5 @@ def predict_fn(req, pipe):
 
 
 def output_fn(data, accept):
-    return data, "image/png"
+    # The model server only accepts bytes/str here (a (body, type) tuple fails with "Unsupported model output data type").
+    return data

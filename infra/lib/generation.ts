@@ -19,7 +19,7 @@ export const GEN_MODELS = [
   { kind: 'image-edit', dir: 'image_edit', modelId: 'Qwen/Qwen-Image-Edit-2509', instance: 'ml.g6e.4xlarge' },
   { kind: 'video', dir: 'video', modelId: 'Wan-AI/Wan2.2-TI2V-5B-Diffusers', instance: 'ml.g6e.2xlarge' },
   { kind: 'tts', dir: 'tts', modelId: 'openbmb/VoxCPM2', instance: 'ml.g6.xlarge' },
-  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g5.2xlarge' },
+  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g5.xlarge' },
 ];
 const DLC = (region: string) =>
   `763104351884.dkr.ecr.${region}.amazonaws.com/huggingface-pytorch-inference:2.6.0-transformers5.5.3-gpu-py312-cu124-ubuntu22.04-v2.1`;
