@@ -29,7 +29,7 @@ export default function LoginPage() {
     setBusy(true);
     try {
       if (mode === 'signin') await signIn(email, password);
-      else if (mode === 'signup') { await signUp(email, password, workspace || email.split('@')[1]); setMode('confirm'); }
+      else if (mode === 'signup') { await signUp(email, password, workspace || email.split('@')[1], lang); setMode('confirm'); }
       else { await confirm(email, code); await signIn(email, password); }
     } catch (err) {
       setError((err as Error).message);

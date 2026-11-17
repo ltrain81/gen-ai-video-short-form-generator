@@ -8,6 +8,7 @@ from functools import lru_cache
 import boto3
 
 from . import ddb, ingest, models, storage
+from .ingest import LANGUAGES
 from .config import get_config
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ def run(task: dict) -> None:
         "marengo.start": marengo_start,
         "transcribe.start": transcribe_start,
         "image.analyze": image_analyze,
+        "image.caption": image_caption,
         "describe.embed": describe_embed,
     }[name]
     try:
@@ -65,7 +67,7 @@ def run(task: dict) -> None:
     except Exception as exc:  # noqa: BLE001 - record failure on the stage, then re-raise for SQS retry/DLQ
         log.exception("Task %s failed", name)
         if task.get("final_attempt"):
-            ingest.on_stage_done(task["contentKey"], _stage_name(task), "failed", str(exc))
+            ingest.on_stage_done(task["contentKey"], _stage_name(task), "failed", str(exc), task.get("lang"))
         raise
 
 
@@ -77,23 +79,35 @@ def _stage_name(task: dict) -> str:
         return "describe"
     if n == "image.analyze":
         return f"image:{task['image']}"
+    if n == "image.caption":
+        return f"caption:{task['image']}"
     base = {"pegasus.segments": "pegasus.segments", "marengo.start": "marengo", "transcribe.start": "transcribe"}[n]
     return f"{base}:{task['chunk']}"
 
 
 # ------------------------------------------------------------------ Pegasus
+def _lang(task: dict) -> tuple[str, str]:
+    code = task.get("lang") or ingest.DEFAULT_LANGUAGE
+    return code, LANGUAGES.get(code, "English")
+
+
+def analysis_prefix(ck: str, lang: str) -> str:
+    return f"{storage.content_prefix(ck)}/analysis/{lang}"
+
+
 def pegasus_summary(task: dict) -> None:
     ck = task["contentKey"]
+    code, language = _lang(task)
     content = _content(ck)
     chunks = content["manifest"]["chunks"]
     if len(chunks) == 1:
-        summary = models.pegasus_summary(storage.s3_uri(chunks[0]["key"]))
+        summary = models.pegasus_summary(storage.s3_uri(chunks[0]["key"]), language)
     else:
-        parts = [models.pegasus_summary(storage.s3_uri(c["key"])) for c in chunks]
+        parts = [models.pegasus_summary(storage.s3_uri(c["key"]), language) for c in chunks]
         summary = _merge_summaries(parts)
-    _put_json(f"{storage.content_prefix(ck)}/analysis/summary.json", summary)
-    ddb.put({"PK": f"CONTENT#{ck}", "SK": "ANALYSIS#summary", **summary})
-    ingest.on_stage_done(ck, "pegasus.summary")
+    _put_json(f"{analysis_prefix(ck, code)}/summary.json", summary)
+    ddb.put({"PK": f"CONTENT#{ck}", "SK": f"ANALYSIS#summary#{code}", **summary})
+    ingest.on_stage_done(ck, "pegasus.summary", lang=code)
 
 
 def _merge_summaries(parts: list[dict]) -> dict:
@@ -110,17 +124,18 @@ def _merge_summaries(parts: list[dict]) -> dict:
 
 def pegasus_segments(task: dict) -> None:
     ck, i = task["contentKey"], task["chunk"]
+    code, language = _lang(task)
     chunk = _chunk(_content(ck), i)
     offset = float(chunk["startSec"])
-    raw = models.pegasus_segments(storage.s3_uri(chunk["key"]))
+    raw = models.pegasus_segments(storage.s3_uri(chunk["key"]), language=language)
     scenes, chapters = [], []
     for seg in raw:
         seg = dict(seg)
         seg["start_sec"] = float(seg.get("start_sec", 0)) + offset
         seg["end_sec"] = float(seg.get("end_sec", 0)) + offset
         (chapters if seg.pop("_definition_id", "scenes") == "chapters" else scenes).append(seg)
-    _put_json(f"{storage.content_prefix(ck)}/analysis/segments/{i:04d}.json", {"scenes": scenes, "chapters": chapters})
-    ingest.on_stage_done(ck, f"pegasus.segments:{i}")
+    _put_json(f"{analysis_prefix(ck, code)}/segments/{i:04d}.json", {"scenes": scenes, "chapters": chapters})
+    ingest.on_stage_done(ck, f"pegasus.segments:{i}", lang=code)
 
 
 # ------------------------------------------------------------------ Marengo (video/audio, async)
@@ -247,36 +262,40 @@ def _is_cjk_join(prev: str, nxt: str) -> bool:
 
 # ------------------------------------------------------------------ images / pages
 def image_analyze(task: dict) -> None:
+    """Base layer: Marengo image embedding (language-independent)."""
     ck, idx = task["contentKey"], task["image"]
     content = _content(ck)
     image = next(p for p in content["manifest"]["images"] if p["index"] == idx)
     data = storage.s3().get_object(Bucket=_bucket(), Key=image["key"])["Body"].read()
-    vec = models.embed_image(data=data)
     modality = "page" if content["kind"] == "document" else "image"
-    vecs = [{"key": _vector_key(ck, modality, "asset", 0, str(idx)), "embedding": vec,
+    vecs = [{"key": _vector_key(ck, modality, "asset", 0, str(idx)), "embedding": models.embed_image(data=data),
              "metadata": {"contentKey": ck, "modality": modality, "scope": "asset", "page": idx,
                           "startSec": 0, "endSec": 0}}]
-    if task.get("caption"):
-        caption = models.caption_image(data)
-        _put_json(f"{storage.content_prefix(ck)}/analysis/image-{idx:04d}.json", caption)
-        ddb.put({"PK": f"CONTENT#{ck}", "SK": "ANALYSIS#summary", "title": caption.get("title", ""),
-                 "summary": caption.get("caption", ""), "tags": caption.get("tags", []),
-                 "on_screen_text": caption.get("on_screen_text", "")})
-        text = " ".join(filter(None, [caption.get("caption"), ", ".join(caption.get("tags", [])),
-                                      caption.get("on_screen_text")]))
-        if text:
-            vecs.append({"key": _vector_key(ck, "description", "asset", 0, str(idx)),
-                         "embedding": models.embed_text(text),
-                         "metadata": {"contentKey": ck, "modality": "description", "scope": "asset",
-                                      "page": idx, "startSec": 0, "endSec": 0, "text": text[:1500]}})
     _put_json(f"{storage.content_prefix(ck)}/vectors/image-{idx:04d}.json", vecs)
     ingest.on_stage_done(ck, f"image:{idx}")
+
+
+def image_caption(task: dict) -> None:
+    """Language layer for images: caption/tags in the workspace language."""
+    ck, idx = task["contentKey"], task["image"]
+    code, language = _lang(task)
+    image = next(p for p in _content(ck)["manifest"]["images"] if p["index"] == idx)
+    data = storage.s3().get_object(Bucket=_bucket(), Key=image["key"])["Body"].read()
+    caption = models.caption_image(data, language=language)
+    _put_json(f"{analysis_prefix(ck, code)}/image-{idx:04d}.json", caption)
+    if idx == 0:
+        ddb.put({"PK": f"CONTENT#{ck}", "SK": f"ANALYSIS#summary#{code}", "title": caption.get("title", ""),
+                 "summary": caption.get("caption", ""), "tags": caption.get("tags", []),
+                 "on_screen_text": caption.get("on_screen_text", "")})
+    ingest.on_stage_done(ck, f"caption:{idx}", lang=code)
 
 
 # ------------------------------------------------------------------ description embeddings
 def describe_embed(task: dict) -> None:
     ck = task["contentKey"]
-    prefix = f"{storage.content_prefix(ck)}/analysis/segments/"
+    code, _ = _lang(task)
+    base = analysis_prefix(ck, code)
+    prefix = f"{base}/segments/"
     scenes, chapters = [], []
     for obj in storage.s3().list_objects_v2(Bucket=_bucket(), Prefix=prefix).get("Contents", []):
         data = _get_json(obj["Key"])
@@ -284,9 +303,19 @@ def describe_embed(task: dict) -> None:
         chapters.extend(data.get("chapters", []))
     scenes.sort(key=lambda s: s["start_sec"])
     chapters.sort(key=lambda s: s["start_sec"])
-    _put_json(f"{storage.content_prefix(ck)}/analysis/scenes.json", scenes)
-    _put_json(f"{storage.content_prefix(ck)}/analysis/chapters.json", chapters)
+    _put_json(f"{base}/scenes.json", scenes)
+    _put_json(f"{base}/chapters.json", chapters)
     vecs = []
+    for obj in storage.s3().list_objects_v2(Bucket=_bucket(), Prefix=f"{base}/image-").get("Contents", []):
+        cap = _get_json(obj["Key"])
+        idx = int(obj["Key"].rsplit("-", 1)[1].split(".")[0])
+        text = " ".join(filter(None, [cap.get("title"), cap.get("caption"), ", ".join(cap.get("tags", [])),
+                                      cap.get("on_screen_text")]))
+        if text:
+            vecs.append({"key": _vector_key(ck, "description", "asset", 0, f"{code}:{idx}"),
+                         "embedding": models.embed_text(text),
+                         "metadata": {"contentKey": ck, "modality": "description", "scope": "asset", "page": idx,
+                                      "startSec": 0, "endSec": 0, "lang": code, "text": text[:1500]}})
     for kind, items in (("scene", scenes), ("chapter", chapters)):
         for seg in items:
             text = " ".join(filter(None, [seg.get("title"), seg.get("summary"), seg.get("on_screen_text"),
@@ -294,18 +323,18 @@ def describe_embed(task: dict) -> None:
             if not text.strip():
                 continue
             vecs.append({
-                "key": _vector_key(ck, "description", kind, seg["start_sec"]),
+                "key": _vector_key(ck, "description", kind, seg["start_sec"], code),
                 "embedding": models.embed_text(text),
                 "metadata": {"contentKey": ck, "modality": "description", "scope": kind,
                              "startSec": round(seg["start_sec"], 3), "endSec": round(seg["end_sec"], 3),
-                             "text": text[:1500]},
+                             "lang": code, "text": text[:1500]},
             })
-    summary = ddb.get(f"CONTENT#{ck}", "ANALYSIS#summary")
-    if summary and summary.get("summary"):
+    summary = ddb.get(f"CONTENT#{ck}", f"ANALYSIS#summary#{code}")
+    if summary and summary.get("summary") and _content(ck).get("kind") == "video":
         text = f"{summary.get('title', '')}. {summary['summary']}"
-        vecs.append({"key": _vector_key(ck, "description", "asset", 0), "embedding": models.embed_text(text),
+        vecs.append({"key": _vector_key(ck, "description", "asset", 0, code), "embedding": models.embed_text(text),
                      "metadata": {"contentKey": ck, "modality": "description", "scope": "asset",
                                   "startSec": 0, "endSec": float(_content(ck).get("durationSec") or 0),
-                                  "text": text[:1500]}})
-    _put_json(f"{storage.content_prefix(ck)}/vectors/description.json", vecs)
-    ingest.on_stage_done(ck, "describe")
+                                  "lang": code, "text": text[:1500]}})
+    _put_json(f"{storage.content_prefix(ck)}/vectors/description-{code}.json", vecs)
+    ingest.on_stage_done(ck, "describe", lang=code)

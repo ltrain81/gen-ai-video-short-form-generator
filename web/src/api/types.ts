@@ -28,13 +28,14 @@ export interface Asset {
   processing?: { status?: string; stages: Record<string, string>; error?: string };
   analysisSummary?: { title?: string; summary?: string; topics?: string[]; speakers?: string[]; language?: string; genre?: string; mood?: string; tags?: string[] };
   grants?: Grant[] | null;
+  analysisLanguage?: string;
 }
 
 export interface Grant { principal: string; role: Role; expiresAt?: number; grantedBy?: string }
 export interface Collection { collectionId: string; name: string; ownerId: string; role: Role; createdAt: number }
 export interface Group { groupId: string; name: string; member?: boolean }
 export interface TenantUser { sub: string; email?: string; name?: string; tenantRole: 'admin' | 'member' }
-export interface Me { sub: string; email: string; tenantId: string; tenantName?: string; tenantRole: 'admin' | 'member'; groups: Group[]; features: { generation: boolean } }
+export interface Me { sub: string; email: string; tenantId: string; tenantName?: string; tenantRole: 'admin' | 'member'; language: string; languages: Record<string, string>; groups: Group[]; features: { generation: boolean } }
 
 export interface Segment { startSec: number; endSec: number; modality: string; modalities?: string[]; score: number; text?: string; page?: number }
 export interface SearchResult { asset: Asset; score: number; segments: Segment[] }

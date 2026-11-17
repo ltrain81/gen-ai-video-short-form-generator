@@ -86,4 +86,9 @@ export const ko = {
   pages: '페이지',
   trash: '휴지통',
   restore: '복원',
+  workspace: '워크스페이스',
+  analysisLanguage: 'AI 분석 언어',
+  analysisLanguageHint: '새로 업로드되는 자산의 요약·챕터·장면 설명이 이 언어로 생성됩니다.',
+  reanalyze: '현재 언어로 다시 분석',
+  analysisInOtherLanguage: '이 자산은 다른 언어로 분석되었습니다: {lang}',
 };

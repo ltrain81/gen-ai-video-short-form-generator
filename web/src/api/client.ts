@@ -22,6 +22,8 @@ const enc = encodeURIComponent;
 
 export const api = {
   me: () => call<Me>('GET', '/me'),
+  updateTenant: (f: { name?: string; language?: string }) => call<{ name?: string; language?: string }>('PATCH', '/tenant', f),
+  reanalyze: (id: string) => call<{ status: string; language: string }>('POST', `/assets/${id}/reanalyze`),
   assets: (q: { kind?: string; collectionId?: string; trash?: boolean } = {}) => {
     const p = new URLSearchParams();
     if (q.kind) p.set('kind', q.kind);

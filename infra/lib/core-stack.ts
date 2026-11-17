@@ -87,7 +87,10 @@ export class CoreStack extends Stack {
       signInAliases: { email: true },
       autoVerify: { email: true },
       standardAttributes: { email: { required: true, mutable: true }, fullname: { required: false, mutable: true } },
-      customAttributes: { tenantName: new cognito.StringAttribute({ mutable: true, maxLen: 128 }) },
+      customAttributes: {
+        tenantName: new cognito.StringAttribute({ mutable: true, maxLen: 128 }),
+        tenantLanguage: new cognito.StringAttribute({ mutable: true, maxLen: 8 }),
+      },
       passwordPolicy: { minLength: 12, requireSymbols: false },
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { sms: false, otp: true },

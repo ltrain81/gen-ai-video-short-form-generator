@@ -87,5 +87,10 @@ export const en: typeof ko = {
   "language": "한국어",
   "pages": "Pages",
   "trash": "Trash",
-  "restore": "Restore"
+  "restore": "Restore",
+  "workspace": "Workspace",
+  "analysisLanguage": "AI analysis language",
+  "analysisLanguageHint": "Summaries, chapters and scene descriptions of new uploads are written in this language.",
+  "reanalyze": "Re-analyze in current language",
+  "analysisInOtherLanguage": "This asset was analyzed in another language: {lang}"
 };

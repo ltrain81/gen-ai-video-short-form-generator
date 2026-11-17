@@ -1,4 +1,7 @@
 import Box from '@cloudscape-design/components/box';
+import Container from '@cloudscape-design/components/container';
+import FormField from '@cloudscape-design/components/form-field';
+import Select from '@cloudscape-design/components/select';
 import Button from '@cloudscape-design/components/button';
 import ContentLayout from '@cloudscape-design/components/content-layout';
 import Header from '@cloudscape-design/components/header';
@@ -16,7 +19,9 @@ import { fmtDate } from '../util';
 
 export default function AdminPage() {
   const { t } = useI18n();
-  const { notify } = useApp();
+  const { notify, me } = useApp();
+  const [language, setLanguage] = useState<string>('');
+  useEffect(() => { if (me) setLanguage(me.language); }, [me]);
   const [users, setUsers] = useState<TenantUser[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [members, setMembers] = useState<Record<string, string[]>>({});
@@ -46,6 +51,23 @@ export default function AdminPage() {
   return (
     <ContentLayout header={<Header variant="h1">{t('navAdmin')}</Header>}>
       <Tabs tabs={[
+        {
+          id: 'workspace', label: t('workspace'), content: (
+            <Container>
+              <FormField label={t('analysisLanguage')} description={t('analysisLanguageHint')}>
+                <Select
+                  selectedOption={language ? { value: language, label: me?.languages?.[language] ?? language } : null}
+                  options={Object.entries(me?.languages ?? {}).map(([value, label]) => ({ value, label }))}
+                  onChange={async (e) => {
+                    const v = e.detail.selectedOption.value!;
+                    setLanguage(v);
+                    try { await api.updateTenant({ language: v }); notify('success', `${t('analysisLanguage')}: ${me?.languages?.[v] ?? v}`); }
+                    catch (err) { notify('error', (err as Error).message); }
+                  }} />
+              </FormField>
+            </Container>
+          ),
+        },
         {
           id: 'users', label: t('users'), content: (
             <Table items={users} header={<Header actions={

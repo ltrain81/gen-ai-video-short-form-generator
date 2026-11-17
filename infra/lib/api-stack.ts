@@ -29,7 +29,12 @@ export class ApiStack extends Stack {
     super(scope, id, props);
     const fn = pyFunction(this, 'Api', {
       handler: 'shorts.handlers.api.handler',
-      environment: { ...props.ingest.runtimeEnv, USER_POOL_ID: props.userPool.userPoolId, DEPLOY_MODE: props.mode },
+      // The API never launches the media worker; keep its (frequently changing) task-def ARN out of cross-stack refs.
+      environment: {
+        ...Object.fromEntries(Object.entries(props.ingest.runtimeEnv).filter(([k]) => !k.startsWith('MEDIA_WORKER_'))),
+        USER_POOL_ID: props.userPool.userPoolId,
+        DEPLOY_MODE: props.mode,
+      },
       timeout: Duration.seconds(29),
       memorySize: 1024,
       description: 'Archive / sharing / search API',

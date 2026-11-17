@@ -19,7 +19,7 @@ interface AuthState {
   user: { username: string; userId: string } | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, workspace: string) => Promise<void>;
+  signUp: (email: string, password: string, workspace: string, language: string) => Promise<void>;
   confirm: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -41,8 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!r.isSignedIn) throw new Error(`Additional step required: ${r.nextStep.signInStep}`);
       await refresh();
     },
-    signUp: async (email, password, workspace) => {
-      await signUp({ username: email, password, options: { userAttributes: { email, 'custom:tenantName': workspace } } });
+    signUp: async (email, password, workspace, language) => {
+      await signUp({ username: email, password, options: { userAttributes: { email, 'custom:tenantName': workspace, 'custom:tenantLanguage': language } } });
     },
     confirm: async (email, code) => { await confirmSignUp({ username: email, confirmationCode: code }); },
     signOut: async () => { await signOut(); setUser(null); },

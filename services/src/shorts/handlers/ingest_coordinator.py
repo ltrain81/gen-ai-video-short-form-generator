@@ -13,7 +13,8 @@ def _handle(body: dict, _record: dict) -> None:
     elif body.get("type") == "prepare.failed":
         ingest.on_prepare_failed(body)
     elif body.get("type") == "stage.done":
-        ingest.on_stage_done(body["contentKey"], body["stage"], body.get("status", "done"), body.get("error"))
+        ingest.on_stage_done(body["contentKey"], body["stage"], body.get("status", "done"), body.get("error"),
+                             body.get("lang"))
     else:
         raise ValueError(f"Unknown ingest event: {list(body)[:5]}")
 

@@ -16,6 +16,7 @@ import Input from '@cloudscape-design/components/input';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App';
+import Alert from '@cloudscape-design/components/alert';
 import { api } from '../api/client';
 import type { Analysis, Asset, AssetMedia, Scene } from '../api/types';
 import ShareModal from '../components/ShareModal';
@@ -27,7 +28,7 @@ export default function AssetPage() {
   const { assetId = '' } = useParams();
   const [params] = useSearchParams();
   const { t } = useI18n();
-  const { notify } = useApp();
+  const { notify, me } = useApp();
   const navigate = useNavigate();
   const [asset, setAsset] = useState<Asset | null>(null);
   const [media, setMedia] = useState<AssetMedia | null>(null);
@@ -106,6 +107,13 @@ export default function AssetPage() {
           {asset.displayTitle}
         </Header>
       }>
+      {me && asset.analysisLanguage && asset.analysisLanguage !== me.language && asset.status === 'ready' && (
+        <Box margin={{ bottom: 'm' }}>
+          <Alert type="info" action={canEdit && <Button onClick={async () => { await api.reanalyze(asset.assetId); load(); }}>{t('reanalyze')}</Button>}>
+            {t('analysisInOtherLanguage', { lang: me.languages?.[asset.analysisLanguage] ?? asset.analysisLanguage })}
+          </Alert>
+        </Box>
+      )}
       <Grid gridDefinition={[{ colspan: { default: 12, m: 8 } }, { colspan: { default: 12, m: 4 } }]}>
         <SpaceBetween size="l">
           <Container>

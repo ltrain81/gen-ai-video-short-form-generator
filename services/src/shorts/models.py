@@ -110,13 +110,24 @@ def _invoke_pegasus(body: dict) -> dict:
     return json.loads(resp["body"].read())
 
 
-def pegasus_summary(s3_uri: str) -> dict:
+def language_instruction(language: str) -> str:
+    return f"Write every text value in {language} (keep proper nouns as commonly written in {language})."
+
+
+def localized_definitions(language: str) -> list[dict]:
+    suffix = f" Write in {language}."
+    return [{**d, "fields": [{**f, "description": f["description"] + (suffix if f["type"] == "string" and "enum" not in f else "")}
+                             for f in d["fields"]]} for d in SEGMENT_DEFINITIONS]
+
+
+def pegasus_summary(s3_uri: str, language: str = "English") -> dict:
     out = _invoke_pegasus({
         "analysis_mode": "general",
         "inputPrompt": (
             "Analyze this video for a video editor's archive. Give a concise title, a summary, "
             "the spoken language, genre, speakers (by role, e.g. 'host', 'guest in blue shirt'), main topics, "
-            "mood, and which edit formats it suits (highlight, recap, tutorial, supercut, interview, b-roll, ...)."
+            "mood, and which edit formats it suits (highlight, recap, tutorial, supercut, interview, b-roll, ...). "
+            + language_instruction(language)
         ),
         "mediaSource": _media_source(s3_uri),
         "temperature": 0.2,
@@ -126,14 +137,14 @@ def pegasus_summary(s3_uri: str) -> dict:
     return json.loads(out["message"])
 
 
-def pegasus_segments(s3_uri: str, definitions: list[dict] | None = None) -> list[dict]:
+def pegasus_segments(s3_uri: str, definitions: list[dict] | None = None, language: str = "English") -> list[dict]:
     out = _invoke_pegasus({
         "analysis_mode": "time_based_metadata",
         "mediaSource": _media_source(s3_uri),
         "temperature": 0,
         "maxOutputTokens": 32768,
         "segment_time_format": "seconds",
-        "segment_definitions": definitions or SEGMENT_DEFINITIONS,
+        "segment_definitions": definitions or localized_definitions(language),
     })
     return out.get("segments", [])
 
@@ -156,11 +167,13 @@ def pegasus_ask(s3_uri: str, prompt: str, start: float | None = None, end: float
 IMAGE_CAPTION_PROMPT = (
     "Describe this image for a video editor's asset archive. Reply with JSON only: "
     '{"title": str, "caption": str, "tags": [str], "on_screen_text": str, "kind": '
-    '"photo|illustration|screenshot|slide|logo|chart|other"}'
+    '"photo|illustration|screenshot|slide|logo|chart|other"}. '
+    "Write title, caption and tags in {language}; copy on_screen_text verbatim."
 )
 
 
-def caption_image(data: bytes, fmt: str = "jpeg", prompt: str = IMAGE_CAPTION_PROMPT) -> dict:
+def caption_image(data: bytes, fmt: str = "jpeg", language: str = "English", prompt: str | None = None) -> dict:
+    prompt = prompt or IMAGE_CAPTION_PROMPT.replace("{language}", language)
     resp = runtime().converse(
         modelId=get_config().vision_model_id,
         messages=[{"role": "user", "content": [

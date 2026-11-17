@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
-from . import acl, ddb, projects, search, storage
+from . import acl, ddb, ingest, projects, search, storage
 from .auth import Forbidden, Principal
 from .config import get_config
 from .http import BadRequest, Conflict, NotFound, Request, Router
@@ -55,9 +55,44 @@ def me(req: Request):
     tenant = ddb.get(f"TENANT#{p.tenant_id}", "META") or {}
     groups = ddb.batch_get((f"TENANT#{p.tenant_id}", f"GROUP#{g}") for g in p.groups)
     return {"sub": p.sub, "email": p.email, "tenantId": p.tenant_id, "tenantName": tenant.get("name"),
-            "tenantRole": p.tenant_role,
+            "tenantRole": p.tenant_role, "language": tenant.get("language") or ingest.DEFAULT_LANGUAGE,
+            "languages": ingest.LANGUAGES,
             "groups": [{"groupId": g["SK"].removeprefix("GROUP#"), "name": g.get("name")} for g in groups],
             "features": {"generation": os.environ.get("DEPLOY_MODE", "edit") == "full"}}
+
+
+@router.route("PATCH", "/tenant")
+def update_tenant(req: Request):
+    """Workspace settings. `language` controls the language of new AI analysis (summaries, chapters, captions)."""
+    p = req.principal
+    _require_admin(p)
+    fields = {}
+    if "name" in req.body:
+        fields["name"] = str(req.body["name"])[:128]
+    if "language" in req.body:
+        if req.body["language"] not in ingest.LANGUAGES:
+            raise BadRequest(f"language must be one of {sorted(ingest.LANGUAGES)}")
+        fields["language"] = req.body["language"]
+    if not fields:
+        raise BadRequest("Editable fields: name, language")
+    ddb.update(f"TENANT#{p.tenant_id}", "META", fields)
+    audit(p, "tenant.update", f"TENANT#{p.tenant_id}", fields)
+    return fields
+
+
+@router.route("POST", "/assets/{assetId}/reanalyze")
+def reanalyze_asset(req: Request):
+    """Produce the language layer in the current workspace language (e.g. after a language change)."""
+    asset, _ = _require_asset(req.principal, req.params["assetId"], "edit")
+    if not asset.get("contentKey"):
+        raise Conflict("Asset is still processing")
+    lang = ingest.tenant_language(asset["tenantId"])
+    if lang == asset.get("analysisLanguage"):
+        return {"status": asset.get("status"), "language": lang}
+    ddb.update(f"ASSET#{asset['assetId']}", "META", {"status": "processing", "analysisLanguage": lang})
+    ingest.ensure_language(asset["contentKey"], lang)
+    ingest.maybe_finalize(asset["contentKey"])
+    return {"status": "processing", "language": lang}
 
 
 @router.route("GET", "/users")
@@ -266,7 +301,8 @@ def get_asset(req: Request):
         content = ddb.get(f"CONTENT#{asset['contentKey']}", "META") or {}
         out["processing"] = {"status": content.get("status"), "stages": content.get("stages", {}),
                              "error": content.get("lastError")}
-        summary = ddb.get(f"CONTENT#{asset['contentKey']}", "ANALYSIS#summary")
+        summary = ddb.get(f"CONTENT#{asset['contentKey']}",
+                          f"ANALYSIS#summary#{asset.get('analysisLanguage') or ingest.DEFAULT_LANGUAGE}")
         if summary:
             out["analysisSummary"] = {k: v for k, v in summary.items() if k not in {"PK", "SK"}}
     out["grants"] = _grants(f"ASSET#{asset['assetId']}") if role == "owner" else None
@@ -304,9 +340,10 @@ def asset_analysis(req: Request):
     if not ck:
         raise Conflict("Asset is still processing")
     prefix = storage.content_prefix(ck)
-    out = {}
-    for name, key in (("scenes", "analysis/scenes.json"), ("chapters", "analysis/chapters.json"),
-                      ("summary", "analysis/summary.json")):
+    lang = asset.get("analysisLanguage") or ingest.DEFAULT_LANGUAGE
+    out = {"language": lang}
+    for name, key in (("scenes", f"analysis/{lang}/scenes.json"), ("chapters", f"analysis/{lang}/chapters.json"),
+                      ("summary", f"analysis/{lang}/summary.json")):
         try:
             out[name] = json.loads(storage.s3().get_object(Bucket=get_config().media_bucket,
                                                            Key=f"{prefix}/{key}")["Body"].read())
