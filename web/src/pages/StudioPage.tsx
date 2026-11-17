@@ -1,40 +1,52 @@
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
-import Checkbox from '@cloudscape-design/components/checkbox';
-import Link from '@cloudscape-design/components/link';
+import FormField from '@cloudscape-design/components/form-field';
+import Icon, { IconProps } from '@cloudscape-design/components/icon';
+import Popover from '@cloudscape-design/components/popover';
 import PromptInput from '@cloudscape-design/components/prompt-input';
 import SegmentedControl from '@cloudscape-design/components/segmented-control';
 import Select from '@cloudscape-design/components/select';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import Toggle from '@cloudscape-design/components/toggle';
-import TokenGroup from '@cloudscape-design/components/token-group';
-import * as awsui from '@cloudscape-design/design-tokens';
-import { IconProps } from '@cloudscape-design/components/icon';
-import Icon from '@cloudscape-design/components/icon';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
 import AssetPicker from '../components/AssetPicker';
+import SpriteFrame from '../components/SpriteFrame';
 import { api } from '../api/client';
 import { uploadAndFetch } from '../api/upload';
-import type { Asset, BrandKit, ProjectSummary, Recipe } from '../api/types';
+import type { Asset, AssetMedia, BrandKit, ProjectSummary, Recipe } from '../api/types';
 import { useI18n } from '../i18n';
-import { fmtDate } from '../util';
+import { fmtTime } from '../util';
+import { Thumb } from './ArchivePage';
 
 const LENGTHS = [15, 30, 45, 60, 90, 180];
 const CAPTIONS = ['auto', 'clean', 'bold', 'karaoke', 'pop', 'boxed', 'minimal', 'none'];
+const ASPECTS = ['9:16', '1:1', '4:5', '16:9'];
+const lenLabel = (l: number) => (l >= 120 ? `${Math.round(l / 60)}m` : `${l}s`);
 
-/** Chat-first start: pick a format recipe (optional), attach footage, describe → project (or a batch). */
+function ago(ms: number | undefined, lang: string): string {
+  if (!ms) return '';
+  const d = (Date.now() - ms) / 1000;
+  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
+  if (d < 3600) return rtf.format(-Math.max(1, Math.round(d / 60)), 'minute');
+  if (d < 86400) return rtf.format(-Math.round(d / 3600), 'hour');
+  return rtf.format(-Math.round(d / 86400), 'day');
+}
+
+/** Home: one composer (describe → AI edits), templates, recent work and the archive one click away. */
 export default function StudioPage() {
   const { t, lang } = useI18n();
-  const { notify } = useApp();
+  const { notify, me } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const [value, setValue] = useState('');
   const [aspect, setAspect] = useState('9:16');
-  const location = useLocation();
   const [picked, setPicked] = useState<Asset[]>(() => (location.state as { assets?: Asset[] } | null)?.assets ?? []);
   const [showPicker, setShowPicker] = useState(false);
   const [recent, setRecent] = useState<ProjectSummary[]>([]);
+  const [archive, setArchive] = useState<Asset[]>([]);
+  const [covers, setCovers] = useState<Record<string, AssetMedia>>({});
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [length, setLength] = useState<number | null>(null);
@@ -47,6 +59,21 @@ export default function StudioPage() {
   const [busy, setBusy] = useState(false);
   const [dropOver, setDropOver] = useState(false);
   const [uploading, setUploading] = useState(0);
+  const [allRecipes, setAllRecipes] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.projects().then((p) => setRecent(p.filter((x) => !x.archived).slice(0, 6))).catch(() => undefined);
+    api.assets().then((a) => setArchive(a.filter((x) => x.status === 'ready').slice(0, 10))).catch(() => undefined);
+    api.recipes().then(setRecipes).catch(() => undefined);
+    api.brandKits().then(setKits).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const ids = [...new Set(recent.map((p) => p.coverAssetId).filter((x): x is string => !!x))];
+    Promise.all(ids.map((id) => api.media(id).then((m) => [id, m] as const).catch(() => null)))
+      .then((rs) => setCovers(Object.fromEntries(rs.filter((r): r is readonly [string, AssetMedia] => !!r))));
+  }, [recent]);
+
   const onFiles = (files: File[]) => {
     setUploading((n) => n + files.length);
     files.forEach((f) => uploadAndFetch(f)
@@ -54,21 +81,19 @@ export default function StudioPage() {
       .catch((e) => notify('error', `${f.name}: ${(e as Error).message}`))
       .finally(() => setUploading((n) => n - 1)));
   };
-
-  useEffect(() => {
-    api.projects().then((p) => setRecent(p.slice(0, 6))).catch(() => undefined);
-    api.recipes().then(setRecipes).catch(() => undefined);
-    api.brandKits().then(setKits).catch(() => undefined);
-  }, []);
+  const toggleAsset = (a: Asset) => setPicked((x) => (x.some((y) => y.assetId === a.assetId) ? x.filter((y) => y.assetId !== a.assetId) : [...x, a]));
   const choose = (r: Recipe | null) => {
     setRecipe(r);
     if (r) { setAspect(r.aspect ?? aspect); setLength(r.lengthSec ?? null); setCaptions(r.captions ?? 'auto'); }
+    composerRef.current?.querySelector('textarea')?.focus();
   };
   const canBatch = picked.length === 1 && picked[0].kind === 'video';
   const name = (r: Recipe) => r.name?.[lang] ?? r.name?.en ?? r.id;
   const options = useMemo(() => ({ recipe: recipe?.id, aspect, lengthSec: length ?? undefined,
     captions: captions === 'auto' ? undefined : captions, music: music || undefined, brandKitId: kit ?? undefined }),
   [recipe, aspect, length, captions, music, kit]);
+  const summary = [length ? lenLabel(length) : t('lengthAuto'), captions === 'auto' ? t('captionsAuto') : captions === 'none' ? t('captionsNone') : captions,
+    music ? t('music') : null, kit ? kits.find((k) => k.brandKitId === kit)?.name : null].filter(Boolean).join(' · ');
 
   const start = async () => {
     const text = value.trim();
@@ -91,86 +116,155 @@ export default function StudioPage() {
     }
   };
 
+  const shownRecipes = allRecipes ? recipes : recipes.slice(0, 8);
+  const hello = me?.email ? me.email.split('@')[0] : '';
+
   return (
-    <div className="studio-center">
-      <SpaceBetween size="xs" alignItems="center">
-        <Box variant="h1">{t('studioWelcome')}</Box>
-        <Box color="text-body-secondary">{t('studioHint')} {t('dropFilesHint')}</Box>
-      </SpaceBetween>
-      <div className={`prompt${dropOver ? ' drop-zone-active' : ''}`}
-        onDragOver={(e) => { if (!e.dataTransfer.types.includes('Files')) return; e.preventDefault(); setDropOver(true); }}
-        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOver(false); }}
-        onDrop={(e) => { setDropOver(false); if (e.dataTransfer.files.length) { e.preventDefault(); onFiles([...e.dataTransfer.files]); } }}>
-        <SpaceBetween size="m">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
-            {recipes.map((r) => {
-              const on = recipe?.id === r.id;
+    <div className={`home${dropOver ? ' home-drop' : ''}`}
+      onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropOver(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOver(false); }}
+      onDrop={(e) => { setDropOver(false); if (e.dataTransfer.files.length) { e.preventDefault(); onFiles([...e.dataTransfer.files]); } }}>
+      <section className="home-hero">
+        <div className="home-eyebrow"><Icon name="gen-ai" /> {t('appSubtitle')}</div>
+        <h1>{hello ? t('homeHello', { name: hello }) : t('studioWelcome')}</h1>
+        <p>{t('homeSub')}</p>
+      </section>
+
+      <section className="home-composer" ref={composerRef}>
+        <div className={`home-attach${picked.length ? '' : ' empty'}`}>
+          {picked.map((a) => (
+            <div key={a.assetId} className="home-att" title={a.displayTitle}>
+              <Thumb asset={a} />
+              <span className="home-att-name">{a.status !== 'ready' ? t('analyzing') : a.displayTitle}</span>
+              <button type="button" aria-label={t('remove')} onClick={() => toggleAsset(a)}>×</button>
+            </div>
+          ))}
+          <button type="button" className="home-att-add" onClick={() => setShowPicker(true)}>
+            <Icon name="folder-open" /><span>{t('attachFromArchive')}</span>
+          </button>
+          <label className="home-att-add">
+            <Icon name="upload" /><span>{uploading ? `${t('uploading')} (${uploading})` : t('uploadFiles')}</span>
+            <input type="file" multiple hidden onChange={(e) => { if (e.target.files?.length) onFiles([...e.target.files]); e.target.value = ''; }} />
+          </label>
+        </div>
+        {recipe && (
+          <div className="home-recipe-on">
+            <Icon name={(recipe.icon as IconProps.Name) ?? 'settings'} /> {name(recipe)}
+            <button type="button" aria-label={t('remove')} onClick={() => choose(null)}>×</button>
+          </div>
+        )}
+        <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={start} minRows={3} maxRows={12}
+          actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || (!value.trim() && !recipe)}
+          placeholder={recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
+          secondaryActions={
+            <div className="home-opts">
+              <SegmentedControl selectedId={aspect} onChange={(e) => setAspect(e.detail.selectedId)} options={ASPECTS.map((a) => ({ id: a, text: a }))} />
+              <Popover triggerType="custom" size="medium" position="top" dismissButton={false} header={t('options')} content={
+                <SpaceBetween size="s">
+                  <FormField label={t('length')}>
+                    <Select expandToViewport selectedOption={{ value: String(length ?? ''), label: length ? lenLabel(length) : t('lengthAuto') }}
+                      options={[{ value: '', label: t('lengthAuto') }, ...LENGTHS.map((l) => ({ value: String(l), label: lenLabel(l) }))]}
+                      onChange={(e) => setLength(e.detail.selectedOption.value ? Number(e.detail.selectedOption.value) : null)} />
+                  </FormField>
+                  <FormField label={t('captions')}>
+                    <Select expandToViewport selectedOption={{ value: captions, label: captions === 'auto' ? t('captionsAuto') : captions === 'none' ? t('captionsNone') : captions }}
+                      options={CAPTIONS.map((c) => ({ value: c, label: c === 'auto' ? t('captionsAuto') : c === 'none' ? t('captionsNone') : c }))}
+                      onChange={(e) => setCaptions(e.detail.selectedOption.value!)} />
+                  </FormField>
+                  {kits.length > 0 && (
+                    <FormField label={t('brandKit')}>
+                      <Select expandToViewport selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : { value: '', label: t('noBrandKit') }}
+                        options={[{ value: '', label: t('noBrandKit') }, ...kits.map((k) => ({ value: k.brandKitId, label: k.name }))]}
+                        onChange={(e) => setKit(e.detail.selectedOption.value || null)} />
+                    </FormField>
+                  )}
+                  <Toggle checked={music} onChange={(e) => setMusic(e.detail.checked)}>{t('music')}</Toggle>
+                </SpaceBetween>
+              }>
+                <button type="button" className="home-opt-btn"><Icon name="settings" size="small" /> {summary}</button>
+              </Popover>
+            </div>
+          }
+          secondaryContent={canBatch ? (
+            <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+              <Toggle checked={batch} onChange={(e) => setBatch(e.detail.checked)}>{t('batchToggle')}</Toggle>
+              {batch && <Select expandToViewport selectedOption={{ value: String(count), label: `${count}` }}
+                options={[2, 3, 4, 5, 6, 8, 10].map((n) => ({ value: String(n), label: String(n) }))}
+                onChange={(e) => setCount(Number(e.detail.selectedOption.value))} />}
+            </SpaceBetween>
+          ) : undefined} />
+        <div className="home-hint">{t('homeDropHint')}</div>
+      </section>
+
+      {recipes.length > 0 && (
+        <section className="home-section">
+          <div className="home-section-head">
+            <h2>{t('startFromTemplate')}</h2>
+            {recipes.length > 8 && <Button variant="inline-link" onClick={() => setAllRecipes(!allRecipes)}>{allRecipes ? t('showLess') : t('showAll', { n: recipes.length })}</Button>}
+          </div>
+          <div className="home-recipes">
+            {shownRecipes.map((r) => (
+              <button key={r.id} type="button" className={`home-recipe${recipe?.id === r.id ? ' on' : ''}`} onClick={() => choose(recipe?.id === r.id ? null : r)}>
+                <span className="home-recipe-icon"><Icon name={(r.icon as IconProps.Name) ?? 'settings'} /></span>
+                <span className="home-recipe-name">{name(r)}</span>
+                <span className="home-recipe-meta">{[r.aspect, r.lengthSec ? lenLabel(r.lengthSec) : null].filter(Boolean).join(' · ')}</span>
+                <span className="home-recipe-desc">{t(`recipeDesc_${r.id}` as never) !== `recipeDesc_${r.id}` ? t(`recipeDesc_${r.id}` as never) : (r.instruction ?? '').slice(0, 70)}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {recent.length > 0 && (
+        <section className="home-section">
+          <div className="home-section-head">
+            <h2>{t('continueWhereLeft')}</h2>
+            <Button variant="inline-link" onClick={() => navigate('/projects')}>{t('allProjects')} →</Button>
+          </div>
+          <div className="home-recent">
+            {recent.map((p) => {
+              const m = p.coverAssetId ? covers[p.coverAssetId] : undefined;
               return (
-                <button key={r.id} type="button" onClick={() => choose(on ? null : r)} className="recipe-chip"
-                  style={{ borderColor: on ? '#0972d3' : awsui.colorBorderDividerDefault, background: on ? 'rgba(9,114,211,0.08)' : 'transparent', color: 'inherit' }}>
-                  <Icon name={(r.icon as IconProps.Name) ?? 'settings'} size="small" /> {name(r)}
-                  {r.lengthSec ? <span style={{ color: '#8d99a8', marginLeft: 4 }}>{r.lengthSec >= 120 ? `${Math.round(r.lengthSec / 60)}m` : `${r.lengthSec}s`}</span> : null}
+                <button key={p.projectId} type="button" className="home-proj" onClick={() => navigate(`/studio/${p.projectId}`)}>
+                  <div className="home-proj-cover">
+                    {m?.sprites ? <SpriteFrame m={m} t={p.coverAt ?? 0} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', aspectRatio: 'auto' }} />
+                      : p.coverUrl ? <img src={p.coverUrl} alt="" /> : <span>{t('emptyTimeline')}</span>}
+                    <span className="home-proj-badge">{p.aspect}{p.durationSec ? ` · ${fmtTime(p.durationSec)}` : ''}</span>
+                  </div>
+                  <span className="home-proj-title">{p.title}</span>
+                  <span className="home-proj-meta">v{p.currentVersion} · {ago(p.updatedAt, lang)}</span>
                 </button>
               );
             })}
           </div>
-          <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={start} minRows={3} maxRows={10}
-            actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || (!value.trim() && !recipe)}
-            placeholder={uploading ? `${t('uploading')} (${uploading})…` : recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
-            secondaryActions={
-              <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                <Button iconName="folder-open" onClick={() => setShowPicker(true)}>
-                  {picked.length ? `${t('attachFromArchive')} (${picked.length})` : t('attachFromArchive')}
-                </Button>
-                <SegmentedControl selectedId={aspect} onChange={(e) => setAspect(e.detail.selectedId)}
-                  options={['9:16', '1:1', '4:5', '16:9'].map((a) => ({ id: a, text: a }))} />
-                <Select expandToViewport selectedOption={{ value: String(length ?? ''), label: length ? (length >= 120 ? `${length / 60}m` : `${length}s`) : t('lengthAuto') }}
-                  options={[{ value: '', label: t('lengthAuto') }, ...LENGTHS.map((l) => ({ value: String(l), label: l >= 120 ? `${l / 60}m` : `${l}s` }))]}
-                  onChange={(e) => setLength(e.detail.selectedOption.value ? Number(e.detail.selectedOption.value) : null)} />
-                <Select expandToViewport selectedOption={{ value: captions, label: captions === 'auto' ? t('captionsAuto') : captions === 'none' ? t('captionsNone') : captions }}
-                  options={CAPTIONS.map((c) => ({ value: c, label: c === 'auto' ? t('captionsAuto') : c === 'none' ? t('captionsNone') : c }))}
-                  onChange={(e) => setCaptions(e.detail.selectedOption.value!)} />
-                <Checkbox checked={music} onChange={(e) => setMusic(e.detail.checked)}>{t('music')}</Checkbox>
-                {kits.length > 0 && (
-                  <Select expandToViewport selectedOption={kit ? { value: kit, label: kits.find((k) => k.brandKitId === kit)?.name } : { value: '', label: t('noBrandKit') }}
-                    options={[{ value: '', label: t('noBrandKit') }, ...kits.map((k) => ({ value: k.brandKitId, label: k.name }))]}
-                    onChange={(e) => setKit(e.detail.selectedOption.value || null)} />
-                )}
-              </SpaceBetween>
-            }
-            secondaryContent={picked.length ? (
-              <SpaceBetween size="xs">
-                <TokenGroup items={picked.map((a, i) => ({ label: `${i + 1}. ${a.displayTitle}`, description: a.status !== 'ready' ? t('analyzing') : t((a.kind ?? 'other') as never), dismissLabel: t('remove') }))}
-                  onDismiss={({ detail }) => setPicked(picked.filter((_, i) => i !== detail.itemIndex))} />
-                {canBatch && (
-                  <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                    <Toggle checked={batch} onChange={(e) => setBatch(e.detail.checked)}>{t('batchToggle')}</Toggle>
-                    {batch && <Select expandToViewport selectedOption={{ value: String(count), label: `${count}` }}
-                      options={[2, 3, 4, 5, 6, 8, 10].map((n) => ({ value: String(n), label: String(n) }))}
-                      onChange={(e) => setCount(Number(e.detail.selectedOption.value))} />}
-                  </SpaceBetween>
-                )}
-              </SpaceBetween>
-            ) : undefined}
-          />
-          <AssetPicker visible={showPicker} initial={picked} onDismiss={() => setShowPicker(false)}
-            onConfirm={(a) => { setPicked(a); setShowPicker(false); }} />
-          {recent.length > 0 && (
-            <SpaceBetween size="xxs">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <Box variant="awsui-key-label">{t('recentProjects')}</Box>
-                <Link onFollow={(e) => { e.preventDefault(); navigate('/projects'); }}>{t('allProjects')} →</Link>
-              </div>
-              {recent.map((p) => (
-                <Box key={p.projectId} variant="small">
-                  <Link onFollow={(e) => { e.preventDefault(); navigate(`/studio/${p.projectId}`); }}>{p.title}</Link>
-                  {' '}<span style={{ color: '#8d99a8' }}>· {p.aspect} · {fmtDate(p.updatedAt)}</span>
-                </Box>
-              ))}
-            </SpaceBetween>
-          )}
-        </SpaceBetween>
-      </div>
+        </section>
+      )}
+
+      {archive.length > 0 && (
+        <section className="home-section">
+          <div className="home-section-head">
+            <h2>{t('fromYourArchive')}</h2>
+            <Button variant="inline-link" onClick={() => navigate('/archive')}>{t('navArchive')} →</Button>
+          </div>
+          <div className="home-archive">
+            {archive.map((a) => {
+              const on = picked.some((x) => x.assetId === a.assetId);
+              return (
+                <button key={a.assetId} type="button" className={`home-asset${on ? ' on' : ''}`} onClick={() => toggleAsset(a)} title={a.displayTitle}>
+                  <Thumb asset={a} />
+                  <span className="home-asset-check">{on ? '✓' : '+'}</span>
+                  <span className="home-asset-name">{a.displayTitle}</span>
+                  <span className="home-asset-meta">{t((a.kind ?? 'other') as never)}{a.durationSec ? ` · ${fmtTime(a.durationSec)}` : ''}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <AssetPicker visible={showPicker} initial={picked} onDismiss={() => setShowPicker(false)}
+        onConfirm={(a) => { setPicked(a); setShowPicker(false); }} />
+      <Box padding={{ bottom: 'xxl' }} />
     </div>
   );
 }
