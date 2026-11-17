@@ -3,7 +3,7 @@ import { App } from 'aws-cdk-lib';
 import { AgentStack } from '../lib/agent-stack';
 import { ApiStack } from '../lib/api-stack';
 import { CoreStack } from '../lib/core-stack';
-import { GenerationStack } from '../lib/generation';
+import { GEN_MODELS, GenerationModelStack, GenerationStack } from '../lib/generation';
 import { pyFunction } from '../lib/python';
 import { Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
@@ -35,7 +35,7 @@ const agent = new AgentStack(app, `${prefix}-Agent`, {
   mode,
 });
 if (mode === 'full' && agent.generation) {
-  new GenerationStack(app, `${prefix}-Generation`, {
+  const gen = new GenerationStack(app, `${prefix}-Generation`, {
     env, mediaBucket: core.mediaBucket, wiring: agent.generation,
     poller: (scope: Construct) => {
       const fn = pyFunction(scope, 'GenPoller', {
@@ -48,6 +48,14 @@ if (mode === 'full' && agent.generation) {
       return fn;
     },
   });
+  // One stack per model so a capacity failure on one GPU type cannot roll back the others.
+  const only = (app.node.tryGetContext('genModels') as string | undefined)?.split(',');
+  for (const m of GEN_MODELS.filter((x) => !only || only.includes(x.kind))) {
+    new GenerationModelStack(app, `${prefix}-Gen-${m.kind}`, {
+      env, mediaBucket: core.mediaBucket, role: gen.role, endpointPrefix: agent.generation.endpointPrefix, model: m,
+      instance: app.node.tryGetContext(`genInstance-${m.kind}`),
+    });
+  }
 }
 const api = new ApiStack(app, `${prefix}-Api`, {
   env, mode, allowedOrigins: origins, mediaBucket: core.mediaBucket, table: core.table,

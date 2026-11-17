@@ -19,7 +19,7 @@ export const GEN_MODELS = [
   { kind: 'image-edit', dir: 'image_edit', modelId: 'Qwen/Qwen-Image-Edit-2509', instance: 'ml.g6e.4xlarge' },
   { kind: 'video', dir: 'video', modelId: 'Wan-AI/Wan2.2-TI2V-5B-Diffusers', instance: 'ml.g6e.2xlarge' },
   { kind: 'tts', dir: 'tts', modelId: 'openbmb/VoxCPM2', instance: 'ml.g6.xlarge' },
-  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g6.2xlarge' },
+  { kind: 'music', dir: 'music', modelId: 'ACE-Step/ACE-Step-v1-3.5B', instance: 'ml.g5.2xlarge' },
 ];
 const DLC = (region: string) =>
   `763104351884.dkr.ecr.${region}.amazonaws.com/huggingface-pytorch-inference:2.6.0-transformers5.5.3-gpu-py312-cu124-ubuntu22.04-v2.1`;
@@ -63,18 +63,23 @@ export interface GenerationStackProps extends cdk.StackProps {
   poller: (scope: Construct) => lambda.Function;
 }
 
-/** SageMaker async endpoints + the poller (own stack: a model that fails to load cannot roll back the app). */
+/** Shared pieces of generation mode: the SageMaker execution role and the output poller. */
 export class GenerationStack extends Stack {
+  readonly role: iam.Role;
+
   constructor(scope: Construct, id: string, props: GenerationStackProps) {
     super(scope, id, props);
-    const endpointPrefix = props.wiring.endpointPrefix;
-
     const role = new iam.Role(this, 'SageMakerRole', {
       assumedBy: new iam.ServicePrincipal('sagemaker.amazonaws.com'),
       description: 'Generation endpoints: read inputs/write outputs under gen/ and gen-out/, pull AWS DLC images',
     });
+    this.role = role;
     props.mediaBucket.grantRead(role, 'gen/*');
     props.mediaBucket.grantReadWrite(role, 'gen-out/*');
+    // model.tar.gz (inference code) lives in the CDK bootstrap assets bucket of this account/region.
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'], resources: [`arn:aws:s3:::cdk-*-assets-${this.account}-${this.region}/*`],
+    }));
     role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:GetAuthorizationToken'], resources: ['*'] }));
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchCheckLayerAvailability'],
@@ -84,80 +89,95 @@ export class GenerationStack extends Stack {
       actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogStreams', 'cloudwatch:PutMetricData'],
       resources: ['*'],
     }));
-
-    const genDir = path.join(SERVICES_DIR, 'generation');
-    for (const m of GEN_MODELS) {
-      // model.tar.gz = code/{inference.py, requirements.txt, shared.py}; weights come from Hugging Face on start.
-      const code = new s3assets.Asset(this, `Code-${m.kind}`, {
-        path: genDir,
-        bundling: {
-          image: DockerImage.fromRegistry('public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc'),
-          outputType: cdk.BundlingOutput.SINGLE_FILE,
-          command: ['sh', '-c', `mkdir -p /tmp/code && cp -r /asset-input/${m.dir}/code/. /tmp/code/ && cp /asset-input/common/shared.py /tmp/code/ && tar czf /asset-output/model.tar.gz -C /tmp code`],
-        },
-      });
-      code.grantRead(role);
-      const name = `${endpointPrefix}-${m.kind}`;
-      const model = new sagemaker.CfnModel(this, `Model-${m.kind}`, {
-        executionRoleArn: role.roleArn,
-        primaryContainer: {
-          image: DLC(this.region),
-          modelDataUrl: code.s3ObjectUrl,
-          environment: {
-            MODEL_ID: m.modelId, SAGEMAKER_PROGRAM: 'inference.py', SAGEMAKER_SUBMIT_DIRECTORY: '/opt/ml/model/code',
-            HF_HOME: '/tmp/hf', ACESTEP_DIR: '/tmp/acestep', SAGEMAKER_MODEL_SERVER_WORKERS: '1',
-            SAGEMAKER_MODEL_SERVER_TIMEOUT: '3600', MMS_DEFAULT_RESPONSE_TIMEOUT: '3600',
-            MMS_MAX_RESPONSE_SIZE: '536870912', TS_MAX_RESPONSE_SIZE: '536870912',
-          },
-        },
-      });
-      model.node.addDependency(role);
-      const config = new sagemaker.CfnEndpointConfig(this, `Config-${m.kind}`, {
-        productionVariants: [{
-          variantName: 'AllTraffic', modelName: model.attrModelName, instanceType: m.instance, initialInstanceCount: 1,
-          containerStartupHealthCheckTimeoutInSeconds: 3600, modelDataDownloadTimeoutInSeconds: 3600,
-        }],
-        asyncInferenceConfig: {
-          clientConfig: { maxConcurrentInvocationsPerInstance: 1 },
-          outputConfig: {
-            s3OutputPath: `s3://${props.mediaBucket.bucketName}/gen-out/${m.kind}/`,
-            s3FailurePath: `s3://${props.mediaBucket.bucketName}/gen-out/${m.kind}-failed/`,
-          },
-        },
-      });
-      const endpoint = new sagemaker.CfnEndpoint(this, `Endpoint-${m.kind}`, {
-        endpointName: name, endpointConfigName: config.attrEndpointConfigName,
-      });
-
-      // Scale to zero when idle; wake on backlog.
-      const target = new appscaling.ScalableTarget(this, `Scale-${m.kind}`, {
-        serviceNamespace: appscaling.ServiceNamespace.SAGEMAKER,
-        resourceId: `endpoint/${name}/variant/AllTraffic`,
-        scalableDimension: 'sagemaker:variant:DesiredInstanceCount',
-        minCapacity: 0, maxCapacity: 1,
-      });
-      target.node.addDependency(endpoint);
-      target.scaleToTrackMetric(`Backlog-${m.kind}`, {
-        targetValue: 1,
-        customMetric: new cloudwatch.Metric({
-          namespace: 'AWS/SageMaker', metricName: 'ApproximateBacklogSizePerInstance',
-          dimensionsMap: { EndpointName: name }, statistic: 'Average', period: Duration.minutes(1),
-        }),
-        scaleInCooldown: Duration.minutes(20), scaleOutCooldown: Duration.minutes(2),
-      });
-      target.scaleOnMetric(`Wake-${m.kind}`, {
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SageMaker', metricName: 'HasBacklogWithoutCapacity',
-          dimensionsMap: { EndpointName: name }, statistic: 'Average', period: Duration.minutes(1),
-        }),
-        scalingSteps: [{ upper: 0.5, change: 0 }, { lower: 0.5, change: 1 }],
-        adjustmentType: appscaling.AdjustmentType.CHANGE_IN_CAPACITY,
-        cooldown: Duration.minutes(5),
-      });
-    }
-
     const poller = props.poller(this);
     props.wiring.wire(poller);
     poller.addEventSource(new sources.SqsEventSource(props.wiring.pollQueue, { batchSize: 5, reportBatchItemFailures: true }));
+  }
+}
+
+export interface GenerationModelStackProps extends cdk.StackProps {
+  mediaBucket: s3.IBucket;
+  role: iam.IRole;
+  endpointPrefix: string;
+  model: (typeof GEN_MODELS)[number];
+  /** Override the GPU type (e.g. when a type has no capacity): -c genInstance-music=ml.g5.2xlarge */
+  instance?: string;
+}
+
+/**
+ * One SageMaker async endpoint per stack: if a model cannot get GPU capacity (InsufficientInstanceCapacity)
+ * or fails to load, only that model's stack rolls back — the others stay up.
+ */
+export class GenerationModelStack extends Stack {
+  constructor(scope: Construct, id: string, props: GenerationModelStackProps) {
+    super(scope, id, props);
+    const m = props.model;
+    const instance = props.instance ?? m.instance;
+    const genDir = path.join(SERVICES_DIR, 'generation');
+    // model.tar.gz = code/{inference.py, requirements.txt, shared.py}; weights come from Hugging Face on start.
+    const code = new s3assets.Asset(this, 'Code', {
+      path: genDir,
+      bundling: {
+        image: DockerImage.fromRegistry('public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc'),
+        outputType: cdk.BundlingOutput.SINGLE_FILE,
+        command: ['sh', '-c', `mkdir -p /tmp/code && cp -r /asset-input/${m.dir}/code/. /tmp/code/ && cp /asset-input/common/shared.py /tmp/code/ && tar czf /asset-output/model.tar.gz -C /tmp code`],
+      },
+    });
+    const name = `${props.endpointPrefix}-${m.kind}`;
+    const model = new sagemaker.CfnModel(this, 'Model', {
+      executionRoleArn: props.role.roleArn,
+      primaryContainer: {
+        image: DLC(this.region),
+        modelDataUrl: code.s3ObjectUrl,
+        environment: {
+          MODEL_ID: m.modelId, SAGEMAKER_PROGRAM: 'inference.py', SAGEMAKER_SUBMIT_DIRECTORY: '/opt/ml/model/code',
+          HF_HOME: '/tmp/hf', ACESTEP_DIR: '/tmp/acestep', SAGEMAKER_MODEL_SERVER_WORKERS: '1',
+          SAGEMAKER_MODEL_SERVER_TIMEOUT: '3600', MMS_DEFAULT_RESPONSE_TIMEOUT: '3600',
+          MMS_MAX_RESPONSE_SIZE: '536870912', TS_MAX_RESPONSE_SIZE: '536870912',
+        },
+      },
+    });
+    const config = new sagemaker.CfnEndpointConfig(this, 'Config', {
+      productionVariants: [{
+        variantName: 'AllTraffic', modelName: model.attrModelName, instanceType: instance, initialInstanceCount: 1,
+        containerStartupHealthCheckTimeoutInSeconds: 3600, modelDataDownloadTimeoutInSeconds: 3600,
+      }],
+      asyncInferenceConfig: {
+        clientConfig: { maxConcurrentInvocationsPerInstance: 1 },
+        outputConfig: {
+          s3OutputPath: `s3://${props.mediaBucket.bucketName}/gen-out/${m.kind}/`,
+          s3FailurePath: `s3://${props.mediaBucket.bucketName}/gen-out/${m.kind}-failed/`,
+        },
+      },
+    });
+    const endpoint = new sagemaker.CfnEndpoint(this, 'Endpoint', { endpointName: name, endpointConfigName: config.attrEndpointConfigName });
+
+    // Scale to zero when idle; wake on backlog.
+    const target = new appscaling.ScalableTarget(this, 'Scale', {
+      serviceNamespace: appscaling.ServiceNamespace.SAGEMAKER,
+      resourceId: `endpoint/${name}/variant/AllTraffic`,
+      scalableDimension: 'sagemaker:variant:DesiredInstanceCount',
+      minCapacity: 0, maxCapacity: 1,
+    });
+    target.node.addDependency(endpoint);
+    target.scaleToTrackMetric('Backlog', {
+      targetValue: 1,
+      customMetric: new cloudwatch.Metric({
+        namespace: 'AWS/SageMaker', metricName: 'ApproximateBacklogSizePerInstance',
+        dimensionsMap: { EndpointName: name }, statistic: 'Average', period: Duration.minutes(1),
+      }),
+      scaleInCooldown: Duration.minutes(20), scaleOutCooldown: Duration.minutes(2),
+    });
+    target.scaleOnMetric('Wake', {
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/SageMaker', metricName: 'HasBacklogWithoutCapacity',
+        dimensionsMap: { EndpointName: name }, statistic: 'Average', period: Duration.minutes(1),
+      }),
+      scalingSteps: [{ upper: 0.5, change: 0 }, { lower: 0.5, change: 1 }],
+      adjustmentType: appscaling.AdjustmentType.CHANGE_IN_CAPACITY,
+      cooldown: Duration.minutes(5),
+    });
+    new cdk.CfnOutput(this, 'EndpointName', { value: name });
+    new cdk.CfnOutput(this, 'Instance', { value: instance });
   }
 }
