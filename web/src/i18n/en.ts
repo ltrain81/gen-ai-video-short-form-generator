@@ -441,5 +441,11 @@ export const en: typeof ko = {
   "topicsCount": "{n} shorts",
   "planningTopics": "Finding the best range for {n} topics — combining transcript, visual search (Marengo) and Pegasus",
   "confidence": "Confidence",
-  "seriesCreated": "Started {n} topic shorts"
+  "seriesCreated": "Started {n} topic shorts",
+  "series": "Series",
+  "seriesOverview": "Series overview",
+  "seriesHint": "One orchestrator builds and revises every short with the whole set in view. Open a tab to watch or hand-edit a short; in chat say things like \"make #2 punchier\" or \"same intro for all\".",
+  "seriesNotBuilt": "Not built yet",
+  "seriesAskTopics": "Make a series of shorts from this video, one per topic: {topics}. About {len}s each. Find and show me the ranges first; after I confirm, build each short yourself.",
+  "seriesAskCount": "Make a series of {n} different shorts from this video, about {len}s each. Show me the planned ranges first; after I confirm, build each short yourself."
 };

@@ -23,6 +23,7 @@ class ToolContext:
     principal: Principal
     project_id: str
     holder: str  # lock holder id for agent edits, e.g. "agent:<env id>"
+    parent_id: str | None = None  # set when a series orchestrator works on one of its child projects
 
 
 @dataclass
@@ -45,10 +46,25 @@ def tool(name: str, description: str, properties: dict, required: list[str] | No
     return deco
 
 
+# Tools that can act on a child project of a series (the orchestrator edits every short itself).
+SERIES_TOOLS = {"get_timeline", "get_item", "edit_timeline", "preview_frames", "render_video", "list_renders",
+                "list_versions", "restore_version", "export_timeline"}
+
+
 def run(ctx: ToolContext, name: str, args: dict) -> ToolResult:
     if name not in HANDLERS:
         raise ValueError(f"Unknown tool {name}")
-    return HANDLERS[name](ctx, args or {})
+    args = dict(args or {})
+    target = args.pop("projectId", None)
+    if target and target != ctx.project_id:
+        if name not in SERIES_TOOLS:
+            raise ValueError(f"{name} does not take projectId")
+        child = ddb.get(f"PROJ#{target}", "META")
+        if not child or child.get("parentId") != ctx.project_id:
+            raise ValueError("projectId must be a short (child project) of this series — see list_series")
+        projects.require_project(ctx.principal, target, "edit")
+        ctx = ToolContext(principal=ctx.principal, project_id=target, holder=ctx.holder, parent_id=ctx.project_id)
+    return HANDLERS[name](ctx, args)
 
 
 # ------------------------------------------------------------------ helpers
@@ -115,7 +131,9 @@ def _proxy_url(asset: dict) -> str:
 
 
 def _publish(ctx: ToolContext, event: dict) -> None:
-    events.publish(events.channel(ctx.project_id, ctx.principal.sub), [event])
+    events.publish(events.channel(ctx.project_id, ctx.principal.sub), [{**event, "projectId": ctx.project_id}])
+    if ctx.parent_id:  # the series workspace (parent page) shows children live too
+        events.publish(events.channel(ctx.parent_id, ctx.principal.sub), [{**event, "projectId": ctx.project_id}])
 
 
 # ================================================================== context
@@ -138,7 +156,28 @@ def get_context(ctx: ToolContext, _args: dict) -> ToolResult:
                        "brandKit": ({k: v for k, v in brand.items() if k not in {"PK", "SK"}} if brand else None),
                        "workspaceLanguage": ingest.LANGUAGES.get(tenant.get("language", "ko"), "Korean"),
                        "attachedAssets": assets, "timeline": timeline_ops.summarize(tl),
+                       "series": _series_summary(project),
                        "preferences": (ddb.get(f"USER#{ctx.principal.sub}", "PREFS") or {}).get("prefs", {})})
+
+
+def _series_summary(project: dict) -> dict | None:
+    if project.get("childIds"):
+        return {"role": "orchestrator", "shorts": _children(project),
+                "note": "This project orchestrates a series. Edit a short with edit_timeline/preview_frames/get_timeline "
+                        "and projectId=<short projectId>; this project's own timeline stays empty."}
+    if project.get("parentId"):
+        return {"role": "short", "parentId": project["parentId"], "topic": project.get("topic")}
+    return None
+
+
+def _children(project: dict) -> list[dict]:
+    out = []
+    for c in ddb.batch_get((f"PROJ#{cid}", "META") for cid in project.get("childIds") or []):
+        out.append({"projectId": c["projectId"], "topic": c.get("topic"), "title": c.get("title"),
+                    "sourceRange": c.get("seriesRange"), "version": c.get("currentVersion"),
+                    "durationSec": c.get("durationSec"), "aspect": c.get("aspect")})
+    order = {cid: i for i, cid in enumerate(project.get("childIds") or [])}
+    return sorted(out, key=lambda c: order.get(c["projectId"], 0))
 
 
 # ================================================================== find
@@ -359,25 +398,49 @@ def plan_topic_series(ctx: ToolContext, args: dict) -> ToolResult:
 
 
 @tool("create_series",
-      "Create the topic series: one new project per item (same source video), each edited by its own agent run in "
-      "parallel. Items come from plan_topic_series (optionally adjusted by the user). The user sees them as a batch.",
+      "Create the shorts of a series as child projects of THIS project (tabs in the user's workspace). Items usually "
+      "come from plan_topic_series, adjusted with the user. Then build every short YOURSELF: edit_timeline / "
+      "preview_frames / get_timeline with projectId=<child> — you see all of them and keep them consistent (style, "
+      "captions, intro/outro, no duplicate moments). Set delegate=true only if the user wants parallel independent "
+      "runs (faster, but no shared oversight).",
       {"assetId": {"type": "string"}, "items": {"type": "array", "items": {"type": "object", "properties": {
           "topic": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"}}}, "maxItems": 10},
-       "instruction": {"type": "string", "description": "Shared editing instruction (style, captions, length…)"},
-       "aspect": {"type": "string"}, "lengthSec": {"type": "number"}, "userConfirmed": {"type": "boolean"}},
+       "aspect": {"type": "string"}, "delegate": {"type": "boolean"}, "instruction": {"type": "string"},
+       "userConfirmed": {"type": "boolean"}},
       ["assetId", "items", "userConfirmed"])
 def create_series(ctx: ToolContext, args: dict) -> ToolResult:
-    from . import batches
     if not args.get("userConfirmed"):
-        raise ValueError("Show the planned ranges to the user and get a yes first (each short runs its own agent)")
-    _asset(ctx, args["assetId"])
-    project = ddb.get(f"PROJ#{ctx.project_id}", "META") or {}
-    body = {"items": args["items"], "instruction": args.get("instruction", ""), "lengthSec": args.get("lengthSec"),
-            "aspect": args.get("aspect") or project.get("aspect"), "brandKitId": project.get("brandKitId")}
-    b = batches.create(ctx.principal, args["assetId"], len(args["items"]), body)
-    _publish(ctx, {"type": "batch.created", "batchId": b["batchId"], "count": len(b.get("items", []))})
-    return ToolResult({"batchId": b["batchId"], "projects": [{"topic": i.get("topic"), "projectId": i["projectId"]} for i in b.get("items", [])],
-                       "status": "each short is being edited now; the user can open the batch page"})
+        raise ValueError("Show the planned shorts to the user and get a yes first")
+    asset = _asset(ctx, args["assetId"])
+    parent, _ = projects.require_project(ctx.principal, ctx.project_id, "edit")
+    if parent.get("parentId"):
+        raise ValueError("A short cannot hold its own series; create the series from the parent project")
+    aspect = args.get("aspect") or parent.get("aspect") or "9:16"
+    created = []
+    for it in list(args["items"])[:10]:
+        topic = str(it.get("topic") or "").strip()[:120]
+        title = topic or f"{asset.get('title') or asset.get('aiTitle') or asset.get('filename')} #{len(created) + 1}"
+        child = projects.create(ctx.principal, title[:200], aspect, parent.get("synopsis", ""), [asset["assetId"]],
+                                parent_id=ctx.project_id)
+        ddb.update(f"PROJ#{child['projectId']}", "META", {
+            "topic": topic or None, "seriesRange": [float(it.get("startSec", 0)), float(it.get("endSec", 0))],
+            **({"brandKitId": parent["brandKitId"]} if parent.get("brandKitId") else {}),
+            **({"folderId": parent["folderId"]} if parent.get("folderId") else {})})
+        created.append({"projectId": child["projectId"], "topic": topic, "sourceRange": [it.get("startSec"), it.get("endSec")]})
+    if args.get("delegate"):
+        from . import batches
+        for c in created:
+            batches.launch_child(ctx.principal, c["projectId"], asset["assetId"], c, args.get("instruction") or "")
+    _publish(ctx, {"type": "series.updated", "count": len(created)})
+    return ToolResult({"shorts": created, "next": "Build each short with edit_timeline(projectId=…) + preview_frames(projectId=…)"
+                       if not args.get("delegate") else "Each short is being edited by its own run; review them with list_series."})
+
+
+@tool("list_series", "The shorts of this series: topic, planned source range, version, length — to review and "
+      "compare them, or pick which one to change.", {})
+def list_series(ctx: ToolContext, _args: dict) -> ToolResult:
+    project, _ = projects.require_project(ctx.principal, ctx.project_id, "view")
+    return ToolResult({"shorts": _children(project)})
 
 
 @tool("analyze_audio",
@@ -779,3 +842,10 @@ def generate_media(ctx: ToolContext, args: dict) -> ToolResult:
 def list_generation_jobs(ctx: ToolContext, _args: dict) -> ToolResult:
     from . import generation
     return ToolResult(generation.list_jobs(ctx.project_id))
+
+
+# Series tools accept `projectId` (a short of this series). Added to the schemas once every tool is registered.
+for _n in SERIES_TOOLS:
+    if _n in TOOLS:
+        TOOLS[_n]["inputSchema"]["properties"]["projectId"] = {
+            "type": "string", "description": "Series only: the short (child project) to act on; default this project"}

@@ -174,3 +174,16 @@ def run_topic_batch(event: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         log.exception("topic batch failed")
         ddb.update(f"TENANT#{p.tenant_id}", f"BATCH#{bid}", {"status": "failed", "error": str(exc)[:500]})
+
+
+def launch_child(p: Principal, project_id: str, asset_id: str, item: dict, instruction: str) -> None:
+    """Optional parallel mode for a series: one independent agent run for a child short."""
+    rng = item.get("sourceRange") or [item.get("startSec"), item.get("endSec")]
+    prompt = (f"Series short about \"{item.get('topic') or ''}\" from asset {asset_id}. Planned source range "
+              f"{float(rng[0] or 0):.1f}s–{float(rng[1] or 0):.1f}s (trim/extend up to ~15 s for complete thoughts; stay on topic).\n"
+              f"{instruction or 'Make a strong short from this range.'}")
+    turn = uuid.uuid4().hex[:10]
+    if broker.try_start(project_id, turn):
+        broker.save_message(project_id, "user", prompt.split("\n", 1)[-1], turn=turn)
+        boto3.client("lambda").invoke(FunctionName=os.environ["BROKER_FUNCTION"], InvocationType="Event", Payload=json.dumps(
+            {"projectId": project_id, "sub": p.sub, "text": prompt, "turn": turn}).encode())

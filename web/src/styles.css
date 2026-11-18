@@ -142,3 +142,24 @@ body { margin: 0; }
 .home-asset-name { display: block; font-size: 12px; font-weight: 600; padding: 6px 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .home-asset-meta { display: block; font-size: 11px; opacity: .6; padding: 0 8px; }
 .home-attach.empty .home-att-add { width: auto; min-height: 0; flex-direction: row; padding: 6px 12px; border-radius: 999px; }
+
+/* Series workspace */
+.series-tabs { display: flex; gap: 4px; padding: 6px 12px 0 64px; overflow-x: auto; border-bottom: 1px solid rgba(127,127,127,.25); flex-shrink: 0; }
+.series-tabs button { font: inherit; font-size: 13px; color: inherit; background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; opacity: .75; }
+.series-tabs button:hover { opacity: 1; }
+.series-tabs button.on { border-bottom-color: #0972d3; color: #0972d3; opacity: 1; font-weight: 600; }
+.series-n { display: inline-flex; width: 18px; height: 18px; border-radius: 9px; background: rgba(127,127,127,.2); font-size: 11px; align-items: center; justify-content: center; }
+.series-tabs button.on .series-n { background: #0972d3; color: #fff; }
+.series-count { font-size: 11px; opacity: .7; }
+.series-dot { width: 6px; height: 6px; border-radius: 3px; background: #22c55e; }
+.series-dot.busy { background: #f59e0b; animation: seriesPulse 1s infinite alternate; }
+@keyframes seriesPulse { from { opacity: .3; } to { opacity: 1; } }
+.series-overview { flex: 1; overflow-y: auto; padding: 18px 24px; }
+.series-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-top: 12px; }
+.series-card { text-align: left; font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.series-cover { position: relative; aspect-ratio: 9 / 16; max-height: 320px; border-radius: 12px; overflow: hidden; background: #0f172a; display: flex; align-items: center; justify-content: center; color: #8d99a8; font-size: 12px; }
+.series-card:hover .series-cover { box-shadow: 0 0 0 2px #0972d3; }
+.series-badge { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.series-busy { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; padding: 6px; display: flex; gap: 6px; align-items: center; }
+.series-title { font-weight: 700; font-size: 14px; }
+.series-meta { font-size: 11px; opacity: .65; }

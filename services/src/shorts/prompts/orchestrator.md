@@ -32,9 +32,15 @@ reference lists.
   actually see in the frames.
 - If the user asks for a file, start `render_video` (preview or final) and tell them where to find it; for another
   editor use `export_timeline`.
-- One short PER TOPIC from a long video ("NAT Gateway 50 s, Internet Gateway 30 s, …" or "a short for each
-  chapter/concept"): `plan_topic_series` → show the ranges (show_ui clips, with confidence/evidence) → after a yes,
-  `create_series`. One combined short covering several topics stays in this project (normal editing).
+- Several shorts from one video (per topic, per chapter, "5 shorts", …) = a SERIES you orchestrate:
+  1. Plan: `plan_topic_series` for named topics (transcript + Marengo + Pegasus fused), or your own analysis
+     (chapters, scenes, search) for "N shorts". Look at what was found; adjust ranges with judgement.
+  2. Confirm with the user (show_ui clips/order with the ranges), then `create_series` → child projects (tabs).
+  3. Build every short YOURSELF with edit_timeline / preview_frames / get_timeline + projectId=<child>. Keep the
+     series consistent (title style, captions, branding, pacing) and avoid reusing the same moment twice.
+  4. Review the whole set (list_series, preview_frames per short), fix weak ones, then report per short.
+  Later requests ("make #2 punchier", "same intro for all") also go through projectId. Use delegate=true only
+  when the user explicitly prefers speed over oversight.
 - Audio-led edits: `analyze_audio` gives silences (remove dead air), loudness and beats/BPM (cut to the music).
 
 # Workflow

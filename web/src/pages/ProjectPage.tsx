@@ -14,9 +14,10 @@ import { useApp } from '../App';
 import { api } from '../api/client';
 import { AgentEvent, subscribeProject } from '../api/realtime';
 import { uploadFile } from '../api/upload';
-import type { Asset, AssetMedia, ChatMessage, ChatWidgetHistory, ProjectSummary } from '../api/types';
+import type { Asset, AssetMedia, ChatMessage, ChatWidgetHistory, ProjectSummary, SeriesChild } from '../api/types';
 import { questionToWidget, widgetAssetIds } from '../components/ChatWidget';
 import { modelLabel } from '../components/AgentSteps';
+import SpriteFrame from '../components/SpriteFrame';
 import ChatPanel, { ChatEntry } from '../components/ChatPanel';
 import EditorPanel from '../components/EditorPanel';
 import RendersModal from '../components/RendersModal';
@@ -58,6 +59,14 @@ const clampChat = (w: number) => Math.round(Math.min(chatMax(), Math.max(CHAT_MI
 export default function ProjectPage() {
   const { projectId = '' } = useParams();
   const location = useLocation();
+  // Series workspace: this project's chat orchestrates; tabs switch the preview/timeline between its shorts.
+  const [root, setRoot] = useState<ProjectSummary | null>(null);
+  const [children, setChildren] = useState<SeriesChild[]>([]);
+  const [view, setView] = useState<string>('self'); // 'self' | 'overview' | <child projectId>
+  const viewId = view !== 'self' && view !== 'overview' ? view : projectId;
+  const viewIdRef = useRef(viewId);
+  viewIdRef.current = viewId;
+  useEffect(() => { setView('self'); }, [projectId]);
   const { me, notify } = useApp();
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -74,7 +83,8 @@ export default function ProjectPage() {
     if (!project) return;
     try {
       await api.updateProject(projectId, patch);
-      setProject({ ...project, ...patch });
+      setRoot((r) => (r ? { ...r, ...patch } : r));
+      if (viewIdRef.current === projectId) setProject({ ...project, ...patch });
       notify('success', t('agentSettingsSaved'));
     } catch (err) { notify('error', (err as Error).message); }
   };
@@ -137,18 +147,33 @@ export default function ProjectPage() {
     setThumbs((x) => ({ ...x, ...Object.fromEntries(results.map((r) => [r[0], r[3]])) }));
   }, []);
 
-  const loadProject = useCallback(async () => {
+  const loadRoot = useCallback(async () => {
     const r = await api.project(projectId);
+    setRoot(r.project);
+    if (r.project.childIds?.length) {
+      setChildren(await api.children(projectId));
+      setView((v) => (v === 'self' ? 'overview' : v));
+    } else setChildren([]);
+    return r;
+  }, [projectId]);
+  useEffect(() => { loadRoot().catch(() => undefined); }, [loadRoot]);
+  useEffect(() => { // covers for the overview cards
+    const ids = children.map((c) => c.coverAssetId).filter((x): x is string => !!x);
+    if (ids.length) ensureMedia(ids);
+  }, [children]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadProject = useCallback(async () => {
+    const r = await api.project(viewId);
     setProject(r.project);
     setTimeline(r.timeline);
     const ids = new Set<string>(r.project.assetIds ?? []);
     r.timeline.tracks.forEach((tr) => tr.items.forEach((i) => { if (i.type === 'clip') ids.add(i.assetId); }));
     ensureMedia([...ids]);
-  }, [projectId, ensureMedia]);
+  }, [viewId, ensureMedia]);
 
+  useEffect(() => { setSelected(undefined); loadProject().catch((e) => notify('error', e.message)); }, [viewId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Initial load + chat history.
   useEffect(() => {
-    loadProject().catch((e) => notify('error', e.message));
     api.chat(projectId).then((c) => {
       setEntries(fromHistory(c.messages, c.widgets)); setBusy(c.busy);
       ensureMedia((c.widgets ?? []).flatMap((w) => w.spec ? widgetAssetIds(w.spec) : (w.question?.clips ?? []).map((x) => x.assetId)));
@@ -215,8 +240,14 @@ export default function ProjectPage() {
         setRenderKey((k) => k + 1);
         setRendersOpen(true);
         break;
-      case 'timeline.updated':
-        loadProject().catch(() => undefined);
+      case 'timeline.updated': {
+        const pid = (e as { projectId?: string }).projectId;
+        if (!pid || pid === viewIdRef.current) loadProject().catch(() => undefined);
+        if (pid && pid !== projectId) api.children(projectId).then(setChildren).catch(() => undefined);
+        break;
+      }
+      case 'series.updated':
+        loadRoot().catch(() => undefined);
         break;
       case 'turn.completed':
       case 'turn.failed':
@@ -277,7 +308,7 @@ export default function ProjectPage() {
     setSaving(true);
     try {
       const before = project.currentVersion;
-      const r = await api.applyOps(projectId, ops, before, message);
+      const r = await api.applyOps(viewId, ops, before, message);
       const failed = r.results.filter((x) => !x.ok);
       if (failed.length) notify('warning', failed.map((f) => f.error).join('; '));
       if (r.currentVersion !== before) {
@@ -303,15 +334,15 @@ export default function ProjectPage() {
     } finally {
       setSaving(false);
     }
-  }, [project, busy, projectId, notify, selected, ensureMedia, loadProject]);
+  }, [project, busy, viewId, notify, selected, ensureMedia, loadProject]);
 
   const restore = useCallback(async (v: number, push: 'undo' | 'redo' | 'none' = 'none') => {
     if (!project) return;
     const cur = project.currentVersion;
-    await api.restoreVersion(projectId, v);
+    await api.restoreVersion(viewId, v);
     if (push === 'undo') redoStack.current.push(cur); else if (push === 'redo') undoStack.current.push(cur); else undoStack.current.push(cur);
     await loadProject();
-  }, [project, projectId, loadProject]);
+  }, [project, viewId, loadProject]);
   const undo = useCallback(() => { const v = undoStack.current.pop(); if (v != null) restore(v, 'undo'); }, [restore]);
   const redo = useCallback(() => { const v = redoStack.current.pop(); if (v != null) restore(v, 'redo'); }, [restore]);
 
@@ -372,8 +403,8 @@ export default function ProjectPage() {
       op = { op: 'add_clip', assetId: a.assetId, track, start: at.time, srcIn: 0, srcOut: Math.min(dur || 3, 3), duration: 3 };
     }
     applyRef.current([op], 'drop');
-    api.attachAssets(projectId, [a.assetId]).catch(() => undefined);
-  }, [projectId, time, notify, t]);
+    api.attachAssets(viewId, [a.assetId]).catch(() => undefined);
+  }, [viewId, time, notify, t]);
 
   /** Files from the desktop: upload → wait for analysis → place where they were dropped. */
   const dropFiles = useCallback((files: File[], at: DropTarget) => {
@@ -387,9 +418,9 @@ export default function ProjectPage() {
       set({ status: 'uploading', pct: 0 });
       (async () => {
         try {
-          const id = await uploadFile(file, (pr) => set({ status: 'uploading', pct: Math.round((pr.loaded / Math.max(1, pr.total)) * 100) }), { scope: 'project', projectId });
+          const id = await uploadFile(file, (pr) => set({ status: 'uploading', pct: Math.round((pr.loaded / Math.max(1, pr.total)) * 100) }), { scope: 'project', projectId: viewId });
           set({ status: 'processing', pct: 100 });
-          api.attachAssets(projectId, [id]).catch(() => undefined);
+          api.attachAssets(viewId, [id]).catch(() => undefined);
           for (let i = 0; i < 360; i++) {
             const a = await api.asset(id);
             if (a.status === 'ready') {
@@ -408,7 +439,7 @@ export default function ProjectPage() {
         }
       })();
     });
-  }, [projectId, dropAsset, notify]);
+  }, [viewId, dropAsset, notify]);
   const mainTarget = useCallback((): DropTarget => {
     const main = timeline?.tracks.find((x) => x.kind === 'video');
     return { trackId: main?.id ?? 'v1', trackKind: 'video', time: 0, index: main?.items.length ?? 0 };
@@ -457,6 +488,8 @@ export default function ProjectPage() {
   }, [location.state, me, project, send]);
 
   if (!project || !timeline) return <Box textAlign="center" padding="xxl"><Spinner size="large" /></Box>;
+  const hp = root ?? project; // the series (or plain) project the chat belongs to
+  const isSeries = !!root?.childIds?.length;
 
   const selLabel = selected ? (selected.item.type === 'clip' ? `${titles[selected.item.assetId] ?? ''} ${fmtTime(selected.item.start)}` : selected.item.type) : undefined;
   const hasEdit = timeline.tracks.some((tr) => tr.items.length > 0);
@@ -476,12 +509,14 @@ export default function ProjectPage() {
           <Box variant="small" color="text-body-secondary">{t('shortcutsNote')}</Box>
         </SpaceBetween>
       </Modal>
-      {rendersOpen && <RendersModal projectId={projectId} refreshKey={renderKey} onClose={() => setRendersOpen(false)} />}
+      {rendersOpen && <RendersModal projectId={viewId} refreshKey={renderKey} onClose={() => setRendersOpen(false)} />}
       {/* Left: canvas (preview) + docked timeline */}
       <section className="studio-canvas-pane">
         <div className="studio-toolbar" style={{ borderBottom: divider }}>
           <SpaceBetween direction="horizontal" size="s" alignItems="center">
-            <BreadcrumbGroup items={[{ text: t('navProjects'), href: '/projects' }, ...folderPath.map((f) => ({ text: f.name, href: '/projects' })), { text: project.title, href: '#' }]}
+            <BreadcrumbGroup items={[{ text: t('navProjects'), href: '/projects' }, ...folderPath.map((f) => ({ text: f.name, href: '/projects' })),
+              ...(root?.parentId ? [{ text: t('series'), href: `/studio/${root.parentId}` }] : []),
+              { text: hp.title, href: '#' }, ...(isSeries && view !== 'overview' && view !== 'self' ? [{ text: project.title, href: '#' }] : [])]}
               onFollow={(e) => { e.preventDefault(); if (e.detail.href !== '#') navigate(e.detail.href); }} ariaLabel="breadcrumbs" />
           </SpaceBetween>
           <SpaceBetween direction="horizontal" size="xs" alignItems="center">
@@ -502,10 +537,10 @@ export default function ProjectPage() {
             ]} onItemClick={async ({ detail }) => {
               try {
                 if (detail.id === 'final' || detail.id === 'preview') {
-                  await api.requestRender(projectId, detail.id); setRenderKey((k) => k + 1); setRendersOpen(true);
+                  await api.requestRender(viewId, detail.id); setRenderKey((k) => k + 1); setRendersOpen(true);
                 } else if (detail.id === 'list') setRendersOpen(true);
                 else {
-                  const r = await api.exportProject(projectId, detail.id as 'otio' | 'fcpxml' | 'edl');
+                  const r = await api.exportProject(viewId, detail.id as 'otio' | 'fcpxml' | 'edl');
                   const a = document.createElement('a');
                   a.href = URL.createObjectURL(new Blob([r.content], { type: r.contentType }));
                   a.download = r.filename; a.click(); URL.revokeObjectURL(a.href);
@@ -517,6 +552,42 @@ export default function ProjectPage() {
             {busy && <StatusIndicator type="loading">{t('agentWorking')}</StatusIndicator>}
           </SpaceBetween>
         </div>
+        {isSeries && (
+          <div className="series-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={view === 'overview'} className={view === 'overview' ? 'on' : ''} onClick={() => setView('overview')}>
+              ▦ {t('seriesOverview')} <span className="series-count">{children.length}</span>
+            </button>
+            {children.map((c, i) => (
+              <button key={c.projectId} type="button" role="tab" aria-selected={view === c.projectId} className={view === c.projectId ? 'on' : ''}
+                onClick={() => setView(c.projectId)} title={c.topic ?? c.title}>
+                <span className="series-n">{i + 1}</span> {(c.topic || c.title || '').slice(0, 24)}
+                {c.busy ? <span className="series-dot busy" /> : c.version ? <span className="series-dot" /> : null}
+              </button>
+            ))}
+          </div>
+        )}
+        {isSeries && view === 'overview' ? (
+          <div className="series-overview">
+            <Box variant="p" color="text-body-secondary">{t('seriesHint')}</Box>
+            <div className="series-grid">
+              {children.map((c, i) => {
+                const m = c.coverAssetId ? media[c.coverAssetId] : undefined;
+                return (
+                  <button key={c.projectId} type="button" className="series-card" onClick={() => setView(c.projectId)}>
+                    <div className="series-cover">
+                      {m?.sprites ? <SpriteFrame m={m} t={c.coverAt ?? c.sourceRange?.[0] ?? 0} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', aspectRatio: 'auto' }} />
+                        : <span>{c.version ? '' : t('seriesNotBuilt')}</span>}
+                      <span className="series-badge">#{i + 1}{c.durationSec ? ` · ${fmtTime(c.durationSec)}` : ''}</span>
+                      {c.busy && <span className="series-busy"><Spinner /> {t('agentWorking')}</span>}
+                    </div>
+                    <span className="series-title">{c.topic || c.title}</span>
+                    <span className="series-meta">{c.sourceRange ? `${t('sourceRange')} ${fmtTime(c.sourceRange[0])}–${fmtTime(c.sourceRange[1])}` : ''} · v{c.version ?? 0}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (<>
         <div className="studio-stage">
           <Preview timeline={timeline} media={media} time={time} onTime={setTime} selectedId={selected?.item.id}
             playing={playing} onPlayingChange={setPlaying} prefetchId={hoverItem}
@@ -539,6 +610,7 @@ export default function ProjectPage() {
               onDropAsset={dropAsset} onDropFiles={dropFiles} onAction={itemAction} canPaste={hasClip} onHoverItem={setHoverItem} />
           </ExpandableSection>
         </div>
+        </>)}
       </section>
       {/* Right: chat sidebar */}
       <aside className="studio-chat-pane" style={{ borderLeft: divider, background: awsui.colorBackgroundContainerContent }}>
@@ -552,7 +624,7 @@ export default function ProjectPage() {
         {mode === 'manual' ? (
           <>
             {busy && <Box padding="s"><StatusIndicator type="loading">{t('lockedByAgent')}</StatusIndicator></Box>}
-            <EditorPanel projectId={projectId} timeline={timeline} selected={selected?.item} time={time} titles={titles}
+            <EditorPanel projectId={viewId} timeline={timeline} selected={selected?.item} time={time} titles={titles}
               onOps={applyOps} onRestore={(v) => restore(v)} version={project.currentVersion} disabled={busy || saving} />
           </>
         ) : <ChatPanel entries={entries} busy={busy} onSend={send} projectId={projectId} media={media} onError={(m) => notify('error', m)} onAnswer={answer} thumbs={thumbs} titles={titles}
@@ -560,21 +632,21 @@ export default function ProjectPage() {
           header={
             <div style={{ padding: '14px 20px', borderBottom: divider }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <div style={{ flex: 1, minWidth: 0 }}><Box variant="h3" padding="n">{project.title}</Box></div>
+                <div style={{ flex: 1, minWidth: 0 }}><Box variant="h3" padding="n">{hp.title}</Box></div>
                 {agentModels.length > 0 && (
                   <ButtonDropdown expandToViewport variant="inline-icon" ariaLabel={t('agentSettings')} items={[
                     { id: 'm', text: t('agentModel'), items: agentModels.map((m) => ({ id: `model:${m.id}`, text: m.label,
-                      description: t(`tier_${m.tier}` as never), checked: (project.agentModel ?? agentDefaults.current?.model) === m.id, itemType: 'checkbox' as const })) },
+                      description: t(`tier_${m.tier}` as never), checked: (hp.agentModel ?? agentDefaults.current?.model) === m.id, itemType: 'checkbox' as const })) },
                     { id: 'e', text: t('agentEffort'), items: agentEfforts.map((ef) => ({ id: `effort:${ef}`, text: t(`effort_${ef}` as never),
-                      checked: (project.agentEffort ?? agentDefaults.current?.effort) === ef, itemType: 'checkbox' as const })) },
+                      checked: (hp.agentEffort ?? agentDefaults.current?.effort) === ef, itemType: 'checkbox' as const })) },
                   ]} onItemClick={({ detail }) => {
                     const [k, v] = detail.id.split(':');
                     setAgent(k === 'model' ? { agentModel: v } : { agentEffort: v });
                   }} />
                 )}
               </div>
-              <Box variant="small" color="text-body-secondary">AI · {modelLabel(project.agentModel ?? agentDefaults.current?.model)} · {t(`effort_${project.agentEffort ?? agentDefaults.current?.effort ?? 'high'}` as never)}</Box>
-              {project.synopsis && project.synopsis !== project.title && <Box variant="small" color="text-body-secondary">{project.synopsis}</Box>}
+              <Box variant="small" color="text-body-secondary">AI · {modelLabel(hp.agentModel ?? agentDefaults.current?.model)} · {t(`effort_${hp.agentEffort ?? agentDefaults.current?.effort ?? 'high'}` as never)}</Box>
+              {hp.synopsis && hp.synopsis !== hp.title && <Box variant="small" color="text-body-secondary">{hp.synopsis}</Box>}
             </div>
           } />}
       </aside>

@@ -439,5 +439,11 @@ export const ko = {
   topicsCount: "{n}개 숏폼",
   planningTopics: "{n}개 주제의 구간을 찾는 중 — 자막·화면 검색(Marengo)·Pegasus를 종합합니다",
   confidence: "신뢰도",
-  seriesCreated: "주제별 숏폼 {n}개를 만들기 시작했습니다"
+  seriesCreated: "주제별 숏폼 {n}개를 만들기 시작했습니다",
+  series: "시리즈",
+  seriesOverview: "시리즈 전체",
+  seriesHint: "한 오케스트레이터가 모든 숏폼을 함께 보며 만들고 고칩니다. 탭을 눌러 각 숏폼을 보거나 직접 편집하세요. 채팅에서 \"2번을 더 빠르게\", \"모두 같은 인트로\"처럼 말하면 됩니다.",
+  seriesNotBuilt: "아직 편집 전",
+  seriesAskTopics: "이 영상으로 주제별 숏폼 시리즈를 만들어줘. 주제: {topics}. 각 약 {len}초. 먼저 구간을 찾아 보여주고, 확인하면 각 숏폼을 직접 만들어줘.",
+  seriesAskCount: "이 영상으로 서로 다른 숏폼 {n}개 시리즈를 만들어줘. 각 약 {len}초. 먼저 어떤 구간들로 할지 보여주고, 확인하면 각 숏폼을 직접 만들어줘."
 };

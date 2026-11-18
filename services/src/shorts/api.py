@@ -734,6 +734,20 @@ def remove_folder(req: Request):
     return {"ok": True}
 
 
+@router.route("GET", "/projects/{projectId}/children")
+def project_children(req: Request):
+    """The shorts of a series (for the workspace tabs and overview)."""
+    from . import agent_tools
+    project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
+    kids = agent_tools._children(project)
+    metas = {c["projectId"]: c for c in ddb.batch_get((f"PROJ#{k['projectId']}", "META") for k in kids)}
+    for k in kids:
+        m = metas.get(k["projectId"]) or {}
+        k.update(coverAssetId=m.get("coverAssetId"), coverAt=m.get("coverAt"), updatedAt=m.get("updatedAt"),
+                 busy=bool((m.get("agentBusy") or {}).get("until", 0) > ddb.now_ms()))
+    return kids
+
+
 @router.route("POST", "/projects/{projectId}/duplicate")
 def duplicate_project(req: Request):
     project, _ = projects.require_project(req.principal, req.params["projectId"], "view")
@@ -774,7 +788,8 @@ def get_project(req: Request):
     return {"project": {k: project.get(k) for k in ("projectId", "title", "aspect", "synopsis", "currentVersion",
                                                       "createdAt", "updatedAt", "ownerId", "assetIds", "agentModel",
                                                       "agentEffort", "orchestrator", "folderId", "batchId",
-                                                      "duplicatedFrom", "starred")},
+                                                      "duplicatedFrom", "starred", "parentId", "childIds", "topic",
+                                                      "seriesRange")},
             "role": role, "lock": projects.lock_state(project), "timeline": projects.load_timeline(project, version)}
 
 

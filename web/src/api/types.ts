@@ -64,7 +64,7 @@ export interface AssetMedia {
 }
 
 export interface Folder { folderId: string; name: string; parentId?: string | null; color?: string; ownerId: string; createdAt: number }
-export interface ProjectSummary { folderId?: string | null; starred?: boolean; archived?: boolean; batchId?: string; recipe?: string; durationSec?: number; coverUrl?: string | null; coverAssetId?: string; coverAt?: number; lastMessage?: string; lastMessageAt?: number; duplicatedFrom?: { projectId: string; version: number }; agentModel?: string; agentEffort?: string; orchestrator?: string; projectId: string; title: string; aspect: string; synopsis?: string; currentVersion: number; createdAt: number; updatedAt: number; ownerId: string; assetIds?: string[]; role?: string }
+export interface ProjectSummary { parentId?: string; childIds?: string[]; topic?: string; seriesRange?: [number, number]; folderId?: string | null; starred?: boolean; archived?: boolean; batchId?: string; recipe?: string; durationSec?: number; coverUrl?: string | null; coverAssetId?: string; coverAt?: number; lastMessage?: string; lastMessageAt?: number; duplicatedFrom?: { projectId: string; version: number }; agentModel?: string; agentEffort?: string; orchestrator?: string; projectId: string; title: string; aspect: string; synopsis?: string; currentVersion: number; createdAt: number; updatedAt: number; ownerId: string; assetIds?: string[]; role?: string }
 export interface ChatMessage { role: 'user' | 'assistant'; text: string; createdAt: number; tools?: { name: string; status: string }[]; steps?: unknown[]; model?: string; effort?: string; questionId?: string; error?: string }
 export interface RenderInfo { renderId: string; status: 'queued' | 'running' | 'done' | 'failed'; quality: 'final' | 'preview'; version: number; progress?: number; message?: string; createdAt: number; finishedAt?: number; durationSec?: number; width?: number; height?: number; error?: string; urls?: { video: string; srt: string; vtt: string; thumbnail: string } }
 export interface Recipe { id: string; builtin: boolean; name: { ko?: string; en?: string }; skill?: string; aspect?: string; lengthSec?: number; captions?: string; icon?: string; instruction?: string; createdBy?: string }
@@ -80,3 +80,5 @@ export interface ChatWidgetHistory {
   spec?: import('../components/ChatWidget').WidgetSpec;
   question?: { questionId: string; question: string; kind: string; options?: string[]; clips?: { assetId: string; startSec: number; endSec: number; label?: string }[]; multiple?: boolean; estimate?: Record<string, unknown> };
 }
+
+export interface SeriesChild { projectId: string; topic?: string; title?: string; sourceRange?: [number, number]; version?: number; durationSec?: number; aspect?: string; coverAssetId?: string; coverAt?: number; updatedAt?: number; busy?: boolean }

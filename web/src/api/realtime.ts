@@ -8,6 +8,7 @@ export type AgentEvent =
   | { type: 'thought'; turn: string; text: string }
   | { type: 'download'; url: string; filename: string }
   | { type: 'batch.created'; batchId: string; count: number }
+  | { type: 'series.updated'; count: number }
   | { type: 'render.requested'; renderId: string; quality: string }
   | { type: 'timeline.updated'; version: number; message?: string }
   | { type: 'question'; questionId: string; question: string; kind: 'text' | 'choice' | 'clips' | 'confirm' | 'range';

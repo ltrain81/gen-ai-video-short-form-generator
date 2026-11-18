@@ -403,8 +403,12 @@ def run_turn(event: dict) -> None:
                      model=relay.model, effort=relay.effort, error=error, turn=turn)
         if relay.text.strip():
             ddb.update(f"PROJ#{project_id}", "META", {"lastMessage": relay.text.strip()[:200], "lastMessageAt": ddb.now_ms()})
-        agent = (ddb.get(f"PROJ#{project_id}", "META") or {}).get("agent") or {}
+        meta = ddb.get(f"PROJ#{project_id}", "META") or {}
+        agent = meta.get("agent") or {}
         if agent.get("environmentId"):
-            projects.release_lock(project_id, f"agent:{agent['environmentId']}")
+            holder = f"agent:{agent['environmentId']}"
+            projects.release_lock(project_id, holder)
+            for cid in meta.get("childIds") or []:  # series: the orchestrator edited its shorts too
+                projects.release_lock(cid, holder)
         finish(project_id)
         relay.emit({"type": "turn.failed", "error": error} if error else {"type": "turn.completed"})

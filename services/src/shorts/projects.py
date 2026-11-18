@@ -66,7 +66,8 @@ def require_project(p: Principal, project_id: str, action: str) -> tuple[dict, s
     return project, role
 
 
-def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "", asset_ids: list[str] | None = None) -> dict:
+def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "", asset_ids: list[str] | None = None,
+           parent_id: str | None = None) -> dict:
     pid = "p" + uuid.uuid4().hex[:20]
     now = ddb.now_ms()
     timeline = empty_timeline("tl" + uuid.uuid4().hex[:12], pid, aspect)
@@ -75,7 +76,12 @@ def create(p: Principal, title: str, aspect: str = "9:16", synopsis: str = "", a
             "title": title, "synopsis": synopsis, "aspect": aspect, "currentVersion": 0, "createdAt": now,
             "assetIds": _usable(p, asset_ids or []),
             "updatedAt": now, "GSI2PK": f"TENANT#{p.tenant_id}", "GSI2SK": f"PROJ#{now}#{pid}"}
+    if parent_id:
+        item["parentId"] = parent_id
     ddb.put(item)
+    if parent_id:  # series: the parent keeps the ordered list of its shorts
+        ddb.update_raw(f"PROJ#{parent_id}", "META", "SET childIds = list_append(if_not_exists(childIds, :empty), :c)",
+                       values={":c": [pid], ":empty": []})
     ddb.put({"PK": f"PROJ#{pid}", "SK": f"VER#{0:06d}", "version": 0, "author": "system", "message": "created",
              "createdAt": now})
     acl.grant(f"PROJ#{pid}", f"USER#{p.sub}", "owner", p.tenant_id, p.sub)
@@ -190,7 +196,7 @@ def summary_of(timeline: dict) -> tuple[tuple[str | None, float], float]:
 
 LIST_FIELDS = ("projectId", "title", "aspect", "currentVersion", "createdAt", "updatedAt", "ownerId", "synopsis",
                "assetIds", "folderId", "starred", "archived", "batchId", "recipe", "durationSec", "coverAssetId",
-               "coverAt", "lastMessage", "lastMessageAt", "duplicatedFrom")
+               "coverAt", "lastMessage", "lastMessageAt", "duplicatedFrom", "parentId", "childIds", "topic", "seriesRange")
 
 
 def list_for(p: Principal) -> list[dict]:

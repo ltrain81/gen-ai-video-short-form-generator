@@ -96,7 +96,8 @@ export default function ProjectsPage() {
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    let xs = items.filter((p) => (scope.kind === 'archived' ? p.archived : !p.archived));
+    // Shorts of a series live inside their series (tabs); list them only via the parent.
+    let xs = items.filter((p) => !p.parentId && (scope.kind === 'archived' ? p.archived : !p.archived));
     if (scope.kind === 'starred') xs = xs.filter((p) => p.starred);
     if (scope.kind === 'unfiled') xs = xs.filter((p) => !p.folderId);
     if (scope.kind === 'folder') { const ids = descendants(scope.id); xs = xs.filter((p) => p.folderId && ids.has(p.folderId)); }
@@ -106,7 +107,7 @@ export default function ProjectsPage() {
     return [...xs].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
   }, [items, scope, filter, sort, descendants]);
 
-  const count = (pred: (p: ProjectSummary) => boolean) => items.filter((p) => !p.archived && pred(p)).length;
+  const count = (pred: (p: ProjectSummary) => boolean) => items.filter((p) => !p.parentId && !p.archived && pred(p)).length;
   const patch = async (p: ProjectSummary, b: Record<string, unknown>) => {
     try { await api.updateProject(p.projectId, b); await load(); } catch (e) { notify('error', (e as Error).message); }
   };
@@ -208,6 +209,7 @@ export default function ProjectsPage() {
           {p.lastMessage && <div className="pj-last">{p.lastMessage}</div>}
           <SpaceBetween direction="horizontal" size="xxs">
             {p.batchId && <Badge color="blue">{t('batch')}</Badge>}
+            {!!p.childIds?.length && <Badge color="green">{t('series')} · {p.childIds.length}</Badge>}
             {p.duplicatedFrom && <Badge>{t('copyBadge')}</Badge>}
             {p.recipe && <Badge color="grey">{p.recipe}</Badge>}
           </SpaceBetween>

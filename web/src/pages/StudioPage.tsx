@@ -105,10 +105,16 @@ export default function StudioPage() {
     setBusy(true);
     try {
       if (batch && canBatch) {
-        const b = await api.createBatch(batchMode === 'topics' && topicList.length
-          ? { assetId: picked[0].assetId, topics: topicList, instruction: text, ...options }
-          : { assetId: picked[0].assetId, count, instruction: text, ...options });
-        navigate(`/batches/${b.batchId}`);
+        // A series: one orchestrated project (tabs per short) instead of independent fire-and-forget runs.
+        const a = picked[0];
+        const ask = batchMode === 'topics' && topicList.length
+          ? t('seriesAskTopics', { topics: topicList.join(', '), len: length ?? 45 })
+          : t('seriesAskCount', { n: count, len: length ?? 45 });
+        const { projectId } = await api.createProject({
+          title: `${t('series')}: ${batchMode === 'topics' && topicList.length ? topicList.slice(0, 3).join(', ') : a.displayTitle}`.slice(0, 80),
+          synopsis: text, assetIds: [a.assetId], ...options,
+        });
+        navigate(`/studio/${projectId}`, { state: { firstMessage: `${ask}${text ? `\n${text}` : ''}` } });
         return;
       }
       const { projectId } = await api.createProject({
