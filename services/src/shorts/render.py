@@ -105,13 +105,86 @@ def crop_filter(src_w: int, src_h: int, W: int, H: int, path: list[dict], t0: fl
     return f"crop={cw}:{ch}:'{x}':'{y}',scale={W}:{H}:flags=lanczos"
 
 
-def _bg_filter(src: str, W: int, H: int, background: str) -> str:
-    """Full-canvas background for box layouts: blurred copy of the clip, or a solid colour."""
-    if background == "blur":
+def _hex(c: str, default: str = "000000") -> str:
+    c = str(c or "").strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    return c if len(c) == 6 and all(ch in "0123456789abcdefABCDEF" for ch in c) else default
+
+
+def parse_background(background) -> dict:
+    """Box/canvas background spec → {type: blur|gradient|color, ...}.
+    Accepts "blur", "blur:40", "#rrggbb", "gradient:#a,#b[,#c…][@angle]" or a dict
+    {type: blur, amount, brightness} / {type: gradient, colors: [...], angle} / {type: color, color}."""
+    if isinstance(background, dict):
+        b = dict(background)
+        b.setdefault("type", "gradient" if b.get("colors") else "blur" if "amount" in b else "color")
+        return b
+    s_ = str(background or "black").strip()
+    if s_.startswith("blur"):
+        amt = s_.split(":", 1)[1] if ":" in s_ else ""
+        return {"type": "blur", "amount": float(amt) if amt.replace(".", "", 1).isdigit() else 24}
+    if s_.startswith("gradient"):
+        body = s_.split(":", 1)[1] if ":" in s_ else ""
+        body, _, ang = body.partition("@")
+        cols = [c for c in body.split(",") if c.strip()]
+        return {"type": "gradient", "colors": cols or ["#0b3d5c", "#1fbf8f"], "angle": float(ang) if ang.strip() else 180}
+    return {"type": "color", "color": s_ if s_.startswith("#") else "#000000"}
+
+
+def gradient_source(W: int, H: int, colors: list[str], angle: float = 180.0, fps: int = 30) -> str:
+    """Static linear gradient (CSS angle convention: 180 = top → bottom) as an ffmpeg source filter."""
+    import math
+    cols = [_hex(c, "000000") for c in (colors or [])][:8] or ["0b3d5c", "1fbf8f"]
+    if len(cols) == 1:
+        cols = cols * 2
+    a = math.radians(float(angle))
+    dx, dy = math.sin(a), -math.cos(a)
+    half = (abs(W * dx) + abs(H * dy)) / 2
+    x0, y0 = int(max(0, W / 2 - dx * half)), int(max(0, H / 2 - dy * half))
+    x1, y1 = int(max(0, W / 2 + dx * half)), int(max(0, H / 2 + dy * half))
+    cs = ":".join(f"c{i}=0x{c}" for i, c in enumerate(cols))
+    return f"gradients=s={W}x{H}:r={fps}:n={len(cols)}:{cs}:x0={x0}:y0={y0}:x1={x1}:y1={y1}:speed=0,format=yuv420p"
+
+
+def _bg_filter(src: str, W: int, H: int, background) -> str:
+    """Full-canvas background for box layouts: blurred copy of the clip, a gradient or a solid colour.
+    A gradient does not read `src` (callers check `uses_src`)."""
+    b = parse_background(background)
+    if b["type"] == "blur":
+        amt = int(max(2, min(80, float(b.get("amount", 24) or 24))))
+        br = max(-1.0, min(1.0, float(b.get("brightness", -0.12) or 0)))
         return (f"{src}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                f"boxblur=24:2,eq=brightness=-0.12")
-    col = background if background.startswith("#") and len(background) in (4, 7) else "#000000"
-    return f"{src}scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color={col}@1:t=fill"
+                f"boxblur={amt}:2,eq=brightness={br:.3f}")
+    if b["type"] == "gradient":
+        return gradient_source(W, H, b.get("colors") or [], float(b.get("angle", 180) or 0))
+    return f"{src}scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color=0x{_hex(b.get('color'))}@1:t=fill"
+
+
+def source_rect(opts: dict) -> tuple[float, float, float, float] | None:
+    """`reframe.source` {x, y, w, h} (0..1 of the source frame): the exact region of the clip to use."""
+    src = as_obj(opts.get("source"))
+    if not src:
+        return None
+    w = max(0.02, min(1.0, float(src.get("w", 1) or 1)))
+    h = max(0.02, min(1.0, float(src.get("h", 1) or 1)))
+    x = max(0.0, min(1.0 - w, float(src.get("x", (1 - w) / 2) or 0)))
+    y = max(0.0, min(1.0 - h, float(src.get("y", (1 - h) / 2) or 0)))
+    if w > 0.999 and h > 0.999:
+        return None
+    return x, y, w, h
+
+
+def is_native(item: dict) -> bool:
+    return item.get("mediaKind") != "image" and as_obj(item.get("reframe")).get("layout") == "native"
+
+
+def zoom_tail(cw: int, ch: int, zoom: tuple[str, str, str]) -> str:
+    """Zoom (≥1×) into a cw×ch picture around (x, y) — time expressions; the size stays cw×ch."""
+    z, xc, yc = zoom
+    zz = f"max(1,{z})"
+    return (f"scale=w='trunc(iw*{zz}/2)*2':h='trunc(ih*{zz}/2)*2':eval=frame,"
+            f"crop={cw}:{ch}:'(iw-{cw})*clip({xc},0,1)':'(ih-{ch})*clip({yc},0,1)'")
 
 
 def _pad_color(opts: dict) -> str:
@@ -129,23 +202,48 @@ def box_rect(box: dict, W: int, H: int) -> tuple[int, int, int, int]:
 
 
 def layout_filter(layout: str, src_w: int, src_h: int, W: int, H: int, path: list[dict], t0: float,
-                  opts: dict | None = None) -> str:
+                  opts: dict | None = None, zoom: tuple[str, str, str] | None = None) -> str:
     """Video filter graph from [0:v] to [v] for one clip.
 
     Layouts: crop (cover the canvas, follow the focus path) · fit_blur · letterbox · split (subject on top, whole
     frame below) · box — the clip fills any rectangle of the canvas (`box: {x,y,w,h}`), `fit: cover|contain`,
-    `background: black|blur|#rrggbb`. e.g. a 1:1 square centred in a 9:16 frame is
+    `background: black|#rrggbb|blur[:amount]|gradient:#a,#b[@angle]` · native (own aspect; PiP layers).
+    `source: {x,y,w,h}` (0..1 of the source) cuts an exact region first. `zoom` = (scale, x, y) time expressions:
+    zoom inside the box. e.g. a 1:1 square centred in a 9:16 frame is
     {layout: box, box: {x: 0, y: 0.2187, w: 1, h: 0.5625}}.
     """
     opts = opts or {}
+    src = source_rect(opts)
+    if src:  # cut the exact region first; every layout then works on that region
+        sx, sy, sw, sh = src
+        cw_, ch_ = max(2, int(src_w * sw / 2) * 2), max(2, int(src_h * sh / 2) * 2)
+        pre = f"crop={cw_}:{ch_}:'min(iw-{cw_},iw*{sx:.4f})':'min(ih-{ch_},ih*{sy:.4f})',"
+        src_w, src_h = cw_, ch_
+        g = layout_filter(layout, src_w, src_h, W, H, path, t0, {**opts, "source": None}, zoom)
+        return g.replace("[0:v]", f"[0:v]{pre}", 1)
+    if layout == "native":  # the clip at its own aspect, canvas width (picture-in-picture layers)
+        return f"[0:v]scale={W}:{max(2, int(W * src_h / src_w / 2) * 2)}[v]"
     if layout == "box":
         bx, by, bw, bh = box_rect(as_obj(opts.get("box")), W, H)
         fit = opts.get("fit", "cover")
-        fg = (crop_filter(src_w, src_h, bw, bh, path, t0) if fit != "contain"
-              else f"scale={bw}:{bh}:force_original_aspect_ratio=decrease")
-        bg = _bg_filter("[a]", W, H, str(opts.get("background") or opts.get("padColor") or "black"))
-        return (f"[0:v]split=2[a][b];{bg}[bg];[b]{fg}[fg];"
-                f"[bg][fg]overlay=x='{bx}+({bw}-w)/2':y='{by}+({bh}-h)/2'[v]")
+        if fit != "contain":
+            fw, fh = bw, bh
+            fg = crop_filter(src_w, src_h, bw, bh, path, t0)
+        else:
+            k = min(bw / src_w, bh / src_h)
+            fw, fh = min(bw, max(2, int(src_w * k / 2) * 2)), min(bh, max(2, int(src_h * k / 2) * 2))
+            fg = f"scale={fw}:{fh}"
+        if zoom:
+            fg += "," + zoom_tail(fw, fh, zoom)
+        bgspec = opts.get("background") or opts.get("padColor") or "black"
+        pos = f"x='{bx}+({bw}-w)/2':y='{by}+({bh}-h)/2'"
+        if parse_background(bgspec)["type"] == "gradient":
+            # The clip's own frames carry the timing (a source filter alone is endless / off by a frame).
+            return (f"[0:v]split=2[a][b];[a]scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[c];"
+                    f"{_bg_filter('', W, H, bgspec)}[g];[c][g]overlay=0:0[bg];[b]{fg}[fg];"
+                    f"[bg][fg]overlay={pos}[v]")
+        return (f"[0:v]split=2[a][b];{_bg_filter('[a]', W, H, bgspec)}[bg];[b]{fg}[fg];"
+                f"[bg][fg]overlay={pos}[v]")
     if layout == "fit_blur":
         return (f"[0:v]split=2[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
                 f"boxblur=24:2,eq=brightness=-0.12[bg];[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
@@ -563,9 +661,16 @@ class Renderer:
         reframe = item.get("reframe") or {}
         canvas_ar, src_ar = W / H, (m.get("width") or W) / (m.get("height") or H)
         layout = reframe.get("layout") or ("crop" if abs(canvas_ar - src_ar) > 0.02 else "crop")
+        if layout == "native" and not layer:
+            layout = "letterbox"  # the main track always fills the canvas
+        kf = as_obj(item.get("keyframes"))
+        # Box layouts zoom/pan inside the box; every other layout zooms the whole frame (below).
+        box_zoom = (layout == "box" and not layer and any(kf.get(k) for k in ("scale", "x", "y")))
+        zoom = ((kf_expr(kf.get("scale"), 1.0), kf_expr(kf.get("x"), 0.5), kf_expr(kf.get("y"), 0.5))
+                if box_zoom else None)
         v = layout_filter(layout, int(m.get("width") or W), int(m.get("height") or H), W, H,
                           reframe.get("path") or [], src_in,
-                          {"padColor": self.tl["settings"].get("background") or "black", **reframe})
+                          {"padColor": self.tl["settings"].get("background") or "black", **reframe}, zoom)
         mode = item.get("mode") or "normal"
         if mode == "freeze":  # hold the first frame for the whole item
             frames = max(1, int(round(dur * self.fps)))
@@ -574,8 +679,7 @@ class Renderer:
         # Main-track clips apply their transform here; overlay layers apply it while compositing (render()).
         extra = transform_filters({} if layer else as_obj(item.get("transform")), item.get("effects"), W, rotate_canvas=True,
                                   lut=self._lut)
-        kf = as_obj(item.get("keyframes"))
-        if not layer and any(kf.get(k) for k in ("scale", "x", "y")):
+        if not layer and not box_zoom and any(kf.get(k) for k in ("scale", "x", "y")):
             # Animated zoom / pan of the main layer (≥ 1×, so the frame stays covered).
             z = f"max(1,{kf_expr(kf.get('scale'), 1.0)})"
             xc, yc = kf_expr(kf.get("x"), 0.5), kf_expr(kf.get("y"), 0.5)
@@ -899,7 +1003,7 @@ class Renderer:
                 self.progress(done / total, "overlays")
                 m = self.media.get(it["assetId"]) or {}
                 pip = scale < 0.999 or (it.get("mediaKind") == "image" and tf) or any(
-                    tf.get(k) for k in ("rotation", "crop", "flipH", "flipV"))
+                    tf.get(k) for k in ("rotation", "crop", "flipH", "flipV")) or is_native(it)
                 is_video = it.get("mediaKind") != "image"
                 if is_video:
                     inputs += ["-i", str(self.segment(it, self.work / f"ov_{tr['id']}_{j:04d}.mp4", layer=True))]
@@ -1056,13 +1160,19 @@ class StillRenderer(Renderer):
         st = src_at(item, t - float(item["start"]))
         reframe = as_obj(item.get("reframe"))
         layout = reframe.get("layout") or "crop"
-        graph = layout_filter(layout, int(m.get("width") or W), int(m.get("height") or H), W, H,
-                              reframe.get("path") or [], st, {"padColor": self.tl["settings"].get("background") or "black", **reframe})
-        extra = transform_filters({} if layer else as_obj(item.get("transform")), item.get("effects"), W, rotate_canvas=True,
-                                  lut=self._lut)
+        if layout == "native" and not layer:
+            layout = "letterbox"
         kf = as_obj(item.get("keyframes"))
         rel = t - float(item["start"])
-        if not layer and any(kf.get(k) for k in ("scale", "x", "y")):
+        box_zoom = layout == "box" and not layer and any(kf.get(k) for k in ("scale", "x", "y"))
+        zoom = ((f"{kf_at(kf.get('scale'), rel, 1.0):.4f}", f"{kf_at(kf.get('x'), rel, 0.5):.4f}",
+                 f"{kf_at(kf.get('y'), rel, 0.5):.4f}") if box_zoom else None)
+        graph = layout_filter(layout, int(m.get("width") or W), int(m.get("height") or H), W, H,
+                              reframe.get("path") or [], st, {"padColor": self.tl["settings"].get("background") or "black", **reframe},
+                              zoom)
+        extra = transform_filters({} if layer else as_obj(item.get("transform")), item.get("effects"), W, rotate_canvas=True,
+                                  lut=self._lut)
+        if not layer and not box_zoom and any(kf.get(k) for k in ("scale", "x", "y")):
             z = max(1.0, kf_at(kf.get("scale"), rel, 1.0))
             xc, yc = (min(1.0, max(0.0, kf_at(kf.get(k), rel, 0.5))) for k in ("x", "y"))
             extra.append(f"scale={even(W * z)}:{even(H * z)},crop={W}:{H}:{(even(W * z) - W) * xc:.0f}:{(even(H * z) - H) * yc:.0f}")
@@ -1110,7 +1220,7 @@ class StillRenderer(Renderer):
             if kfs.get("_fadeOut"):
                 opacity *= min(1.0, (float(o["duration"]) - rel) / max(0.01, float(kfs["_fadeOut"][0]["v"])))
             pip = scale < 0.999 or (o.get("mediaKind") == "image" and tf) or any(
-                tf.get(k) for k in ("rotation", "crop", "flipH", "flipV"))
+                tf.get(k) for k in ("rotation", "crop", "flipH", "flipV")) or is_native(o)
             m = self.media.get(o["assetId"]) or {}
             if pip and o.get("mediaKind") == "image":
                 src = m.get("originalUrl") or m.get("url")

@@ -14,6 +14,10 @@ How to cut
   `look` at the range; if the slide carries meaning, use layout "split" (speaker top, slide bottom) via
   `analyze_framing` with intent "keep the speaker and the slide/board readable". If there is no visible speaker,
   use "fit_blur" or "letterbox" so text is not cropped.
+- Popular lecture-short look: the speaker as a 1:1 card in the middle (box layout + `source` square around the speaker,
+  gradient or blurred background), the lecture title on top, captions below; push in on key sentences (keyframes scale
+  inside the box) and cut to the slide (another `source` region, or split) when it carries the point. See
+  vertical-reframe for the exact values.
 - Remove filler: long pauses (> 1.2 s), repeated starts, "um/uh" runs — split around them.
 - Captions on (preset "clean" or "bold"); put key terms in a title text item when the slide is not shown.
 - Long-form recap: one chapter per topic using get_asset_overview chapters; 1–3 min each.

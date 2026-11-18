@@ -167,7 +167,66 @@ function textAnim(x: TextItem, u: number, H: number): { opacity: number; scale: 
   return { opacity, scale, dy, reveal };
 }
 
-type BoxReframe = ReframeValue & { box?: { x?: number; y?: number; w?: number; h?: number }; fit?: string; background?: string };
+type BgSpec = string | { type?: string; amount?: number; brightness?: number; colors?: string[]; angle?: number; color?: string };
+type BoxReframe = ReframeValue & { box?: { x?: number; y?: number; w?: number; h?: number }; fit?: string; background?: BgSpec;
+  source?: { x?: number; y?: number; w?: number; h?: number } };
+
+const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+
+/** Mirrors render.parse_background. */
+export function parseBg(b: BgSpec | undefined): { type: 'blur' | 'gradient' | 'color'; amount?: number; brightness?: number; colors?: string[]; angle?: number; color?: string } {
+  if (b && typeof b === 'object') {
+    const type = (b.type ?? (b.colors ? 'gradient' : b.amount != null ? 'blur' : 'color')) as 'blur' | 'gradient' | 'color';
+    return { ...b, type };
+  }
+  const s = String(b ?? 'black').trim();
+  if (s.startsWith('blur')) { const a = Number(s.split(':')[1]); return { type: 'blur', amount: Number.isFinite(a) && a > 0 ? a : 24 }; }
+  if (s.startsWith('gradient')) {
+    const [body, ang] = (s.split(':')[1] ?? '').split('@');
+    const colors = body.split(',').map((c) => c.trim()).filter(Boolean);
+    return { type: 'gradient', colors: colors.length ? colors : ['#0b3d5c', '#1fbf8f'], angle: ang ? Number(ang) : 180 };
+  }
+  return { type: 'color', color: s.startsWith('#') ? s : '#000000' };
+}
+
+function sourceRect(r: BoxReframe): { x: number; y: number; w: number; h: number } | null {
+  const s = r.source;
+  if (!s) return null;
+  const w = clamp(s.w ?? 1, 0.02, 1), h = clamp(s.h ?? 1, 0.02, 1);
+  if (w > 0.999 && h > 0.999) return null;
+  return { w, h, x: clamp(s.x ?? (1 - w) / 2, 0, 1 - w), y: clamp(s.y ?? (1 - h) / 2, 0, 1 - h) };
+}
+
+/** Exact geometry for box layouts and source regions (mirrors render.layout_filter): the element is sized to the whole
+ *  source frame and clipped to the visible window; keyframe zoom happens inside that window. */
+function regionStyle(c: ClipItem, st: number, t: number, W: number, H: number, vw?: number, vh?: number): CSSProperties | null {
+  const r = (c.reframe ?? {}) as BoxReframe;
+  const layout = r.layout ?? 'crop';
+  const src = sourceRect(r);
+  if (!vw || !vh || !(layout === 'box' || (layout === 'crop' && src))) return null;
+  const s = src ?? { x: 0, y: 0, w: 1, h: 1 };
+  const bw = clamp(r.box?.w ?? 1, 0.02, 1), bh = clamp(r.box?.h ?? 1, 0.02, 1);
+  const R = layout === 'box'
+    ? { x: clamp(r.box?.x ?? (1 - bw) / 2, 0, 1) * W, y: clamp(r.box?.y ?? (1 - bh) / 2, 0, 1) * H, w: bw * W, h: bh * H }
+    : { x: 0, y: 0, w: W, h: H };
+  const rw = vw * s.w, rh = vh * s.h;
+  const f = focusAt(c, st);
+  const contain = layout === 'box' && r.fit === 'contain';
+  const k = contain ? Math.min(R.w / rw, R.h / rh) : Math.max(R.w / rw, R.h / rh) * Math.max(1, f.scale || 1);
+  const Dw = rw * k, Dh = rh * k;
+  const V = contain ? { x: R.x + (R.w - Dw) / 2, y: R.y + (R.h - Dh) / 2, w: Dw, h: Dh } : R;
+  const ox = contain ? 0 : clamp(f.x * Dw - V.w / 2, 0, Math.max(0, Dw - V.w));
+  const oy = contain ? 0 : clamp(f.y * Dh - V.h / 2, 0, Math.max(0, Dh - V.h));
+  const u = t - c.start;
+  const z = Math.max(1, kfAt(c.keyframes?.scale, u, 1));
+  const xc = clamp(kfAt(c.keyframes?.x, u, 0.5), 0, 1), yc = clamp(kfAt(c.keyframes?.y, u, 0.5), 0, 1);
+  const rl = V.x - ox * z - (V.w * z - V.w) * xc, rt = V.y - oy * z - (V.h * z - V.h) * yc;
+  const Fw = vw * k * z, Fh = vh * k * z;
+  const left = rl - s.x * Fw, top = rt - s.y * Fh;
+  const ins = [V.y - top, left + Fw - (V.x + V.w), top + Fh - (V.y + V.h), V.x - left].map((v) => `${Math.max(0, v).toFixed(1)}px`);
+  return { position: 'absolute', left, top, width: Fw, height: Fh, objectFit: 'fill', clipPath: `inset(${ins.join(' ')})`,
+    opacity: sampleKeyframes(c.keyframes?.opacity, u, c.opacity ?? 1), filter: cssFilter(c.effects) };
+}
 
 function mediaStyle(c: ClipItem, st: number, fit: 'cover' | 'contain', t = c.start, main = false): CSSProperties {
   const f = focusAt(c, st);
@@ -240,7 +299,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   const isPip = (o: ClipItem) => {
     const tf = asObj<NonNullable<ClipItem['transform']>>(o.transform) as Record<string, unknown>;
     return Number(tf.scale ?? 1) < 0.999 || (o.mediaKind === 'image' && !!o.transform) || !!(tf.rotation || tf.crop || tf.flipH || tf.flipV)
-      || !!(o as { _anim?: boolean })._anim;
+      || !!(o as { _anim?: boolean })._anim || (o.mediaKind !== 'image' && (o.reframe as BoxReframe | undefined)?.layout === 'native');
   };
   const zOf = new Map<string, number>(tracks.flatMap((tr, idx) => tr.items.map((i) => [i.id, 2 + idx * 2] as [string, number])));
   const texts = tracks.filter((t) => t.kind === 'text' && !t.hidden).flatMap((t) => t.items).filter((i) => i.type === 'text') as TextItem[];
@@ -330,7 +389,7 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     }
     const lay = mainItem?.mediaKind === 'video' ? focusAt(mainItem, srcTime(mainItem, time)).layout : 'crop';
     const rb = (mainItem?.reframe ?? {}) as { background?: string };
-    syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' || (lay === 'box' && rb.background === 'blur') ? mainItem : undefined, time,
+    syncEl(auxRef.current, lay === 'split' || lay === 'fit_blur' || (lay === 'box' && parseBg(rb.background as BgSpec | undefined).type === 'blur') ? mainItem : undefined, time,
       mainItem && (media[mainItem.assetId]?.scrubUrl ?? media[mainItem.assetId]?.proxyUrl));
     if (auxRef.current) auxRef.current.muted = true;
     const mu = musicItem && (media[musicItem.assetId]?.audioUrl ?? media[musicItem.assetId]?.proxyUrl);
@@ -496,7 +555,10 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
     if (!isPip(o)) return null;
     const m = media[o.assetId];
     // The renderer scales a video layer rendered at canvas size; images keep their own aspect.
-    const ar = o.mediaKind === 'image' ? `${m?.width ?? 1} / ${m?.height ?? 1}` : `${width} / ${height}`;
+    const rr = (o.reframe ?? {}) as BoxReframe;
+    const sr = sourceRect(rr) ?? { x: 0, y: 0, w: 1, h: 1 };
+    const ar = o.mediaKind === 'image' ? `${m?.width ?? 1} / ${m?.height ?? 1}`
+      : rr.layout === 'native' && m?.width && m?.height ? `${m.width * sr.w} / ${m.height * sr.h}` : `${width} / ${height}`;
     return { position: 'absolute', width: `${sc * 100}%`, height: 'auto', aspectRatio: ar,
       left: `${(tf.x ?? 0.5) * 100}%`, top: `${(tf.y ?? 0.5) * 100}%`, objectFit: 'cover', opacity: o.opacity ?? 1,
       cursor: canEdit ? 'move' : 'pointer', filter: cssFilter(o.effects), ...tfCss(tf, 'translate(-50%, -50%)') };
@@ -505,12 +567,18 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
   // Mirrors the server renderer's layouts: fit_blur = blurred cover fill + contained frame;
   // split = subject crop on the top half + whole frame (slide/board) on the bottom half; letterbox = contain on black.
   const mainBox = (mainItem?.reframe ?? {}) as BoxReframe;
-  const boxBlur = mainLayout === 'box' && mainBox.background === 'blur';
+  const boxBg = parseBg(mainBox.background ?? timeline.settings.background);
+  const boxBlur = mainLayout === 'box' && boxBg.type === 'blur';
+  const blurPx = boxBlur ? Math.round((boxBg.amount ?? 24) * stageW / 1080 * 1.6) : 24;
+  const blurBr = boxBlur ? 1 + (boxBg.brightness ?? -0.12) : 0.88;
   const auxStyle: CSSProperties = mainLayout === 'fit_blur' || boxBlur
-    ? { position: 'absolute', inset: '-6%', width: '112%', height: '112%', objectFit: 'cover', filter: 'blur(24px) brightness(0.88)' }
+    ? { position: 'absolute', inset: '-6%', width: '112%', height: '112%', objectFit: 'cover', filter: `blur(${blurPx}px) brightness(${blurBr})` }
     : mainLayout === 'split' ? { position: 'absolute', left: 0, right: 0, bottom: 0, width: '100%', height: '50%', objectFit: 'contain', background: '#000' }
       : { display: 'none' };
   const mainStyle = (c: ClipItem): CSSProperties => {
+    const m = media[c.assetId];
+    const exact = regionStyle(c, srcTime(c, time), time, stageW, stageH, m?.width, m?.height);
+    if (exact) return exact;
     const base = mediaStyle(c, srcTime(c, time), 'cover', time, true);
     if (mainLayout === 'split') {
       const f = focusAt(c, srcTime(c, time));
@@ -542,6 +610,10 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
           onWheel={onStageWheel}
           style={{ position: 'relative', width: stageW, height: stageH, background: timeline.settings.background, overflow: 'hidden', borderRadius: 4,
             cursor: canEdit && mainItem?.mediaKind === 'video' ? 'grab' : undefined, touchAction: canEdit ? 'none' : undefined, outline: selectedId && selectedId === mainItem?.id ? '2px solid #22d3ee' : undefined, outlineOffset: -2 }}>
+          {mainItem?.mediaKind === 'video' && mainLayout === 'box' && boxBg.type !== 'blur' && (
+            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none',
+              background: boxBg.type === 'gradient' ? `linear-gradient(${boxBg.angle ?? 180}deg, ${(boxBg.colors ?? []).join(', ')})` : boxBg.color }} />
+          )}
           <video ref={auxRef} muted playsInline preload="auto" style={mainItem?.mediaKind === 'video' ? auxStyle : { display: 'none' }} />
           {(['A', 'B'] as const).map((k) => (
             <video key={k} ref={k === 'A' ? vidA : vidB} muted={k !== front || main?.muted} playsInline preload="auto"
@@ -571,8 +643,16 @@ export default function Preview({ timeline: timelineIn, media, time, onTime, sel
               return (
                 <div key={o.id} onPointerDown={(e) => beginDrag(e, o, 'pip', 'move')}
                   style={{ ...box, zIndex: z, outline: selectedId === o.id ? '2px solid #22d3ee' : undefined }}>
-                  <LayerVideo item={o} time={time} playing={playing} url={url} muted={!(o.volume && o.volume > 0)}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none', ...focusPos(o, time) }} />
+                  {(() => {
+                    const rr = (o.reframe ?? {}) as BoxReframe;
+                    const sr = rr.layout === 'native' ? sourceRect(rr) : null;
+                    const vs: CSSProperties = sr
+                      ? { position: 'absolute', width: `${100 / sr.w}%`, height: `${100 / sr.h}%`, left: `${(-sr.x / sr.w) * 100}%`,
+                        top: `${(-sr.y / sr.h) * 100}%`, objectFit: 'fill', pointerEvents: 'none' }
+                      : { width: '100%', height: '100%', objectFit: rr.layout === 'native' ? 'fill' : 'cover', display: 'block', pointerEvents: 'none',
+                        ...(rr.layout === 'native' ? {} : focusPos(o, time)) };
+                    return <LayerVideo item={o} time={time} playing={playing} url={url} muted={!(o.volume && o.volume > 0)} style={vs} />;
+                  })()}
                   {handles(o, 'pip')}
                 </div>
               );
