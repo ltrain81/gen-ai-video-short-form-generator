@@ -434,5 +434,12 @@ export const en: typeof ko = {
   "recipeDesc_nature": "Scenery cut to a rhythm",
   "recipeDesc_sports": "Goals from build-up to celebration",
   "recipeDesc_interview": "The quotable moment of an interview",
-  "recipeDesc_tutorial": "A step-by-step how-to"
+  "recipeDesc_tutorial": "A step-by-step how-to",
+  "batchByCount": "By count",
+  "batchByTopic": "By topic",
+  "topicsPlaceholder": "Topics, comma-separated: NAT Gateway, Internet Gateway, VPC peering",
+  "topicsCount": "{n} shorts",
+  "planningTopics": "Finding the best range for {n} topics — combining transcript, visual search (Marengo) and Pegasus",
+  "confidence": "Confidence",
+  "seriesCreated": "Started {n} topic shorts"
 };

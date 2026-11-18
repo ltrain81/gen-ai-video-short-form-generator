@@ -200,6 +200,13 @@ export function onSubscribe(ctx) {
     // Strands fallback runs the tools in-process (as the bound user) and keeps sessions in S3.
     props.mediaBucket.grantReadWrite(this.broker);
     props.ingest.grantModels(this.broker);
+    // Topic batches: the broker plans, then starts one broker run per short (self-invoke; ARN pattern avoids a cycle).
+    this.broker.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['lambda:InvokeFunction'],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:${this.stackName}-Broker*`],
+    }));
+    tools.addEnvironment('BROKER_FUNCTION', this.broker.functionArn); // agent create_series tool
+    this.broker.grantInvoke(tools);
     eventsApi.grantPublish(this.broker);
     this.broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock-mantle:CreateAgentSession', 'bedrock-mantle:GetAgentSession', 'bedrock-mantle:ListAgentSessions',

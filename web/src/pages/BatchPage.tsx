@@ -20,7 +20,7 @@ export default function BatchPage() {
   const [b, setB] = useState<BatchInfo | null>(null);
   const load = useCallback(() => api.batch(batchId).then(setB).catch((e) => notify('error', e.message)), [batchId, notify]);
   useEffect(() => { load(); }, [load]);
-  const running = b?.items?.some((i) => i.busy);
+  const running = b?.items?.some((i) => i.busy) || b?.status === 'planning';
   useEffect(() => {
     if (!running) return;
     const h = window.setInterval(load, 6000);
@@ -29,12 +29,27 @@ export default function BatchPage() {
   return (
     <ContentLayout header={<Header variant="h1" description={t('batchDescription')}
       counter={b?.items ? `(${b.items.length})` : undefined}>{t('batch')}</Header>}>
+      {b?.status === 'planning' && (
+        <Box padding={{ bottom: 'm' }}><StatusIndicator type="loading">{t('planningTopics', { n: b.topics?.length ?? 0 })}</StatusIndicator>
+          <Box variant="small" color="text-body-secondary">{(b.topics ?? []).join(' · ')}</Box></Box>
+      )}
+      {b?.status === 'failed' && <Box padding={{ bottom: 'm' }}><StatusIndicator type="error">{b.error}</StatusIndicator></Box>}
       <Cards items={b?.items ?? []} loading={!b} trackBy="projectId"
         cardsPerRow={[{ cards: 1 }, { minWidth: 600, cards: 2 }, { minWidth: 1000, cards: 3 }]}
         cardDefinition={{
           header: (i) => <Link fontSize="heading-s" onFollow={(e) => { e.preventDefault(); navigate(`/studio/${i.projectId}`); }}>{i.title}</Link>,
           sections: [
-            { id: 'range', header: t('sourceRange'), content: (i) => `${fmtTime(i.range[0])} – ${fmtTime(i.range[1])}` },
+            { id: 'range', header: t('sourceRange'), content: (i) => `${fmtTime(i.range[0])} – ${fmtTime(i.range[1])} (${Math.round(i.range[1] - i.range[0])}s)` },
+            { id: 'plan', content: (i) => {
+              const pl = b?.plan?.find((x) => x.topic && x.topic === i.topic);
+              if (!pl) return null;
+              return (
+                <Box variant="small" color="text-body-secondary">
+                  {t('confidence')} {Math.round((pl.confidence ?? 0) * 100)}% · {(pl.signals ?? []).join(', ')}
+                  {pl.warning && <div style={{ color: '#d97706' }}>⚠ {pl.warning}</div>}
+                </Box>
+              );
+            } },
             { id: 'status', content: (i) => i.busy ? <StatusIndicator type="loading">{t('agentWorking')}</StatusIndicator>
               : i.version > 0 ? <StatusIndicator type="success">v{i.version}</StatusIndicator> : <StatusIndicator type="pending">{t('st_queued')}</StatusIndicator> },
           ],

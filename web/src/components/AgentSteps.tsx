@@ -46,6 +46,8 @@ export const TOOL_LABELS: Record<string, { ko: string; en: string }> = {
   restore_version: { ko: '버전 복원', en: 'Restoring a version' },
   get_item: { ko: '항목 상세 확인', en: 'Reading an item' },
   export_timeline: { ko: '편집 파일 내보내기', en: 'Exporting timeline' },
+  plan_topic_series: { ko: '주제별 구간 찾기', en: 'Planning topic shorts' },
+  create_series: { ko: '주제별 숏폼 만들기', en: 'Creating topic shorts' },
 };
 
 const MODEL_LABELS: Record<string, string> = {

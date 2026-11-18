@@ -205,6 +205,12 @@ export default function ProjectPage() {
         notify('success', `${t('downloadReady')}: ${ev.filename}`);
         break;
       }
+      case 'batch.created': {
+        const ev = e as unknown as { batchId: string; count: number };
+        notify('success', `${t('seriesCreated', { n: ev.count })} → /batches/${ev.batchId}`);
+        window.open(`/batches/${ev.batchId}`, '_blank', 'noopener');
+        break;
+      }
       case 'render.requested':
         setRenderKey((k) => k + 1);
         setRendersOpen(true);

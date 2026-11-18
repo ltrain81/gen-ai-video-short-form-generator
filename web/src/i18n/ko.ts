@@ -432,5 +432,12 @@ export const ko = {
   recipeDesc_nature: "풍경을 리듬감 있는 영상으로",
   recipeDesc_sports: "빌드업부터 세리머니까지 골 장면",
   recipeDesc_interview: "인터뷰에서 인용할 만한 한 마디",
-  recipeDesc_tutorial: "단계별로 따라 하는 튜토리얼"
+  recipeDesc_tutorial: "단계별로 따라 하는 튜토리얼",
+  batchByCount: "개수로",
+  batchByTopic: "주제별",
+  topicsPlaceholder: "주제를 쉼표로: NAT Gateway, Internet Gateway, VPC 피어링",
+  topicsCount: "{n}개 숏폼",
+  planningTopics: "{n}개 주제의 구간을 찾는 중 — 자막·화면 검색(Marengo)·Pegasus를 종합합니다",
+  confidence: "신뢰도",
+  seriesCreated: "주제별 숏폼 {n}개를 만들기 시작했습니다"
 };

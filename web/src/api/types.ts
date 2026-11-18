@@ -70,7 +70,9 @@ export interface RenderInfo { renderId: string; status: 'queued' | 'running' | '
 export interface Recipe { id: string; builtin: boolean; name: { ko?: string; en?: string }; skill?: string; aspect?: string; lengthSec?: number; captions?: string; icon?: string; instruction?: string; createdBy?: string }
 export interface Skill { name: string; description: string; builtin: boolean; body?: string; preview?: string; createdBy?: string }
 export interface BrandKit { brandKitId: string; name: string; groupId?: string | null; logoAssetId?: string; logoCorner?: 'tl' | 'tr' | 'bl' | 'br'; logoScale?: number; logoOpacity?: number; introAssetId?: string; outroAssetId?: string; font?: string; textColor?: string; accentColor?: string; captionPreset?: string; createdBy?: string }
-export interface BatchInfo { batchId: string; assetId: string; createdAt: number; recipe?: string; aspect?: string; count?: number; items?: { projectId: string; title: string; range: [number, number]; version: number; busy: boolean }[] }
+export interface BatchInfo { batchId: string; assetId: string; createdAt: number; recipe?: string; aspect?: string; count?: number; kind?: 'count' | 'topics'; status?: 'planning' | 'running' | 'failed'; error?: string; topics?: string[];
+  plan?: { topic?: string; startSec: number; endSec: number; confidence?: number; signals?: string[]; warning?: string }[];
+  items?: { projectId: string; title: string; topic?: string; range: [number, number]; version: number; busy: boolean }[] }
 export interface GenJob { jobId: string; kind: string; status: 'queued' | 'running' | 'done' | 'failed'; model?: string; provider?: string; params?: Record<string, unknown>; assetId?: string; error?: string; estimate?: { seconds: number; usd: number; coldStart: boolean }; createdAt: number; finishedAt?: number }
 
 export interface ChatWidgetHistory {

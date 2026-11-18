@@ -100,7 +100,7 @@ export const api = {
   createBrandKit: (k: Partial<BrandKit>) => call<BrandKit>('POST', '/brand-kits', k),
   updateBrandKit: (id: string, k: Partial<BrandKit>) => call<BrandKit>('PUT', `/brand-kits/${id}`, k),
   deleteBrandKit: (id: string) => call<void>('DELETE', `/brand-kits/${id}`),
-  createBatch: (b: { assetId: string; count: number; recipe?: string; aspect?: string; lengthSec?: number; instruction?: string; brandKitId?: string }) =>
+  createBatch: (b: { assetId: string; count?: number; topics?: string[]; captions?: string; music?: boolean; recipe?: string; aspect?: string; lengthSec?: number; instruction?: string; brandKitId?: string }) =>
     call<BatchInfo>('POST', '/batches', b),
   batches: () => call<BatchInfo[]>('GET', '/batches'),
   batch: (id: string) => call<BatchInfo>('GET', `/batches/${id}`),

@@ -7,6 +7,7 @@ export type AgentEvent =
   | { type: 'tool'; turn: string; name: string; status: string; error?: string; summary?: string; detail?: string; ms?: number }
   | { type: 'thought'; turn: string; text: string }
   | { type: 'download'; url: string; filename: string }
+  | { type: 'batch.created'; batchId: string; count: number }
   | { type: 'render.requested'; renderId: string; quality: string }
   | { type: 'timeline.updated'; version: number; message?: string }
   | { type: 'question'; questionId: string; question: string; kind: 'text' | 'choice' | 'clips' | 'confirm' | 'range';

@@ -341,6 +341,45 @@ def _beats(a: dict) -> list[float]:
     return out
 
 
+@tool("plan_topic_series",
+      "Plan a SERIES of shorts from one long video, one short per topic (e.g. a 1-hour AWS networking lecture → "
+      "'NAT Gateway' 50 s, 'Internet Gateway' 30 s, …). Fuses every signal: transcript keyword hits, Marengo search "
+      "inside the video (speech, visual, scene descriptions, audio), Pegasus chapters/scenes, then Pegasus confirms the "
+      "exact range. Weights follow the video's content profile (speech-led → transcript; visual-led → visual). Returns "
+      "per-topic ranges with confidence and evidence. Show them to the user (show_ui clips block) before create_series.",
+      {"assetId": {"type": "string"}, "topics": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+       "lengthSec": {"type": "number", "description": "Target length per short (default 45)"},
+       "verify": {"type": "boolean", "description": "Pegasus refinement (default true)"}}, ["assetId", "topics"])
+def plan_topic_series(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import batches
+    _asset(ctx, args["assetId"])
+    plan = batches.plan_topics(ctx.principal, args["assetId"], list(args["topics"]), float(args.get("lengthSec") or 45),
+                               bool(args.get("verify", True)))
+    return ToolResult({"plan": plan, "next": "Confirm with the user (show_ui clips with these ranges), then create_series."})
+
+
+@tool("create_series",
+      "Create the topic series: one new project per item (same source video), each edited by its own agent run in "
+      "parallel. Items come from plan_topic_series (optionally adjusted by the user). The user sees them as a batch.",
+      {"assetId": {"type": "string"}, "items": {"type": "array", "items": {"type": "object", "properties": {
+          "topic": {"type": "string"}, "startSec": {"type": "number"}, "endSec": {"type": "number"}}}, "maxItems": 10},
+       "instruction": {"type": "string", "description": "Shared editing instruction (style, captions, length…)"},
+       "aspect": {"type": "string"}, "lengthSec": {"type": "number"}, "userConfirmed": {"type": "boolean"}},
+      ["assetId", "items", "userConfirmed"])
+def create_series(ctx: ToolContext, args: dict) -> ToolResult:
+    from . import batches
+    if not args.get("userConfirmed"):
+        raise ValueError("Show the planned ranges to the user and get a yes first (each short runs its own agent)")
+    _asset(ctx, args["assetId"])
+    project = ddb.get(f"PROJ#{ctx.project_id}", "META") or {}
+    body = {"items": args["items"], "instruction": args.get("instruction", ""), "lengthSec": args.get("lengthSec"),
+            "aspect": args.get("aspect") or project.get("aspect"), "brandKitId": project.get("brandKitId")}
+    b = batches.create(ctx.principal, args["assetId"], len(args["items"]), body)
+    _publish(ctx, {"type": "batch.created", "batchId": b["batchId"], "count": len(b.get("items", []))})
+    return ToolResult({"batchId": b["batchId"], "projects": [{"topic": i.get("topic"), "projectId": i["projectId"]} for i in b.get("items", [])],
+                       "status": "each short is being edited now; the user can open the batch page"})
+
+
 @tool("analyze_audio",
       "Audio analysis of a time range: silences (for removing pauses/dead air), loudness (LUFS), beat times and an "
       "estimated tempo (BPM) for cutting to music.",

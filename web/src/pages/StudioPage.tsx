@@ -1,6 +1,7 @@
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
 import FormField from '@cloudscape-design/components/form-field';
+import Input from '@cloudscape-design/components/input';
 import Icon, { IconProps } from '@cloudscape-design/components/icon';
 import Popover from '@cloudscape-design/components/popover';
 import PromptInput from '@cloudscape-design/components/prompt-input';
@@ -56,6 +57,9 @@ export default function StudioPage() {
   const [kit, setKit] = useState<string | null>(null);
   const [batch, setBatch] = useState(false);
   const [count, setCount] = useState(5);
+  const [batchMode, setBatchMode] = useState<'count' | 'topics'>('count');
+  const [topicText, setTopicText] = useState('');
+  const topicList = topicText.split(/[,\n]/).map((x) => x.trim()).filter(Boolean).slice(0, 10);
   const [busy, setBusy] = useState(false);
   const [dropOver, setDropOver] = useState(false);
   const [uploading, setUploading] = useState(0);
@@ -97,11 +101,13 @@ export default function StudioPage() {
 
   const start = async () => {
     const text = value.trim();
-    if (!text && !recipe) return;
+    if (!text && !recipe && !(batch && batchMode === 'topics' && topicList.length)) return;
     setBusy(true);
     try {
       if (batch && canBatch) {
-        const b = await api.createBatch({ assetId: picked[0].assetId, count, instruction: text, ...options });
+        const b = await api.createBatch(batchMode === 'topics' && topicList.length
+          ? { assetId: picked[0].assetId, topics: topicList, instruction: text, ...options }
+          : { assetId: picked[0].assetId, count, instruction: text, ...options });
         navigate(`/batches/${b.batchId}`);
         return;
       }
@@ -154,7 +160,7 @@ export default function StudioPage() {
           </div>
         )}
         <PromptInput value={value} onChange={(e) => setValue(e.detail.value)} onAction={start} minRows={3} maxRows={12}
-          actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || (!value.trim() && !recipe)}
+          actionButtonIconName="send" actionButtonAriaLabel="send" disableActionButton={busy || (!value.trim() && !recipe && !(batch && batchMode === 'topics' && topicList.length))}
           placeholder={recipe ? `${name(recipe)} — ${t('recipeHint')}` : t('studioPlaceholder')}
           secondaryActions={
             <div className="home-opts">
@@ -188,9 +194,17 @@ export default function StudioPage() {
           secondaryContent={canBatch ? (
             <SpaceBetween direction="horizontal" size="xs" alignItems="center">
               <Toggle checked={batch} onChange={(e) => setBatch(e.detail.checked)}>{t('batchToggle')}</Toggle>
-              {batch && <Select expandToViewport selectedOption={{ value: String(count), label: `${count}` }}
+              {batch && <SegmentedControl selectedId={batchMode} onChange={(e) => setBatchMode(e.detail.selectedId as 'count' | 'topics')}
+                options={[{ id: 'count', text: t('batchByCount') }, { id: 'topics', text: t('batchByTopic') }]} />}
+              {batch && batchMode === 'count' && <Select expandToViewport selectedOption={{ value: String(count), label: `${count}` }}
                 options={[2, 3, 4, 5, 6, 8, 10].map((n) => ({ value: String(n), label: String(n) }))}
                 onChange={(e) => setCount(Number(e.detail.selectedOption.value))} />}
+              {batch && batchMode === 'topics' && (
+                <div style={{ minWidth: 320, flex: 1 }}>
+                  <Input value={topicText} onChange={(e) => setTopicText(e.detail.value)} placeholder={t('topicsPlaceholder')} />
+                  {topicList.length > 0 && <Box variant="small" color="text-body-secondary">{t('topicsCount', { n: topicList.length })}: {topicList.join(' · ')}</Box>}
+                </div>
+              )}
             </SpaceBetween>
           ) : undefined} />
         <div className="home-hint">{t('homeDropHint')}</div>

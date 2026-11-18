@@ -17,3 +17,6 @@ How to cut
 - Remove filler: long pauses (> 1.2 s), repeated starts, "um/uh" runs — split around them.
 - Captions on (preset "clean" or "bold"); put key terms in a title text item when the slide is not shown.
 - Long-form recap: one chapter per topic using get_asset_overview chapters; 1–3 min each.
+- Topic series (one short per concept, e.g. "NAT Gateway", "Internet Gateway" from a 1-hour lecture): use
+  `plan_topic_series` (transcript + Marengo + Pegasus fused, sentence-snapped), confirm with the user, then
+  `create_series`. Inside each short: open with the term as a title, keep the definition + one example, show the slide.

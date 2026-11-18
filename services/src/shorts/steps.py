@@ -95,6 +95,14 @@ def summarize(name: str, args: Any, output: Any = None) -> str:
             return str(a.get("name") or "")
         if name in {"estimate_generation", "generate_media"}:
             return f"{a.get('kind', '')} {_q(a.get('prompt') or a.get('text'), 40)}".strip()
+        if name == "plan_topic_series":
+            tops = a.get("topics") or []
+            res = ""
+            if isinstance(o, dict) and o.get("plan"):
+                res = " → " + ", ".join(f"{_t(x.get('startSec'))}–{_t(x.get('endSec'))}" for x in o["plan"][:4])
+            return f"{', '.join(map(str, tops[:4]))}{' …' if len(tops) > 4 else ''}{res}"
+        if name == "create_series":
+            return f"{len(a.get('items') or [])} shorts"
         if name == "preview_frames":
             ts_ = a.get("times") or []
             return ", ".join(_t(x) for x in ts_[:6]) + (f" (+{len(ts_) - 6})" if len(ts_) > 6 else "") if ts_ else "auto"

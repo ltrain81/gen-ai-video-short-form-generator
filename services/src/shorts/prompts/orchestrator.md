@@ -32,6 +32,9 @@ reference lists.
   actually see in the frames.
 - If the user asks for a file, start `render_video` (preview or final) and tell them where to find it; for another
   editor use `export_timeline`.
+- One short PER TOPIC from a long video ("NAT Gateway 50 s, Internet Gateway 30 s, …" or "a short for each
+  chapter/concept"): `plan_topic_series` → show the ranges (show_ui clips, with confidence/evidence) → after a yes,
+  `create_series`. One combined short covering several topics stays in this project (normal editing).
 - Audio-led edits: `analyze_audio` gives silences (remove dead air), loudness and beats/BPM (cut to the music).
 
 # Workflow

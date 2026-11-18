@@ -980,9 +980,17 @@ def chat_send(req: Request):
 @router.route("POST", "/batches")
 def create_batch(req: Request):
     from . import batches
-    asset_id, count = req.require("assetId", "count")
-    out = batches.create(req.principal, str(asset_id), int(count), req.body)
-    audit(req.principal, "batch.create", f"ASSET#{asset_id}", {"count": int(count)})
+    asset_id = req.body.get("assetId")
+    if not asset_id:
+        raise BadRequest("assetId is required")
+    if req.body.get("topics") and not req.body.get("items"):
+        # Topic series: planning (transcript + Marengo + Pegasus) can take a minute → runs in the broker.
+        out = batches.start_topic_batch(req.principal, str(asset_id), req.body)
+        audit(req.principal, "batch.create", f"ASSET#{asset_id}", {"topics": len(req.body["topics"])})
+        return out
+    count = int(req.body.get("count") or len(req.body.get("items") or []) or 1)
+    out = batches.create(req.principal, str(asset_id), count, req.body)
+    audit(req.principal, "batch.create", f"ASSET#{asset_id}", {"count": count})
     return out
 
 
