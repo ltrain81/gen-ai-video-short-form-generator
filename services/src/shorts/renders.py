@@ -50,6 +50,17 @@ def _update(project_id: str, rid: str, **fields) -> None:
     ddb.update(f"PROJ#{project_id}", f"RENDER#{rid}", fields)
 
 
+def proxy_size(w: int, h: int, max_side: int = 1280) -> tuple[int, int]:
+    """Frame size of proxy_720.mp4 (media.make_proxy: long side capped at max_side, other side even, -2 rounding)."""
+    def even(x: float) -> int:  # ffmpeg av_rescale: round half away from zero, in units of 2
+        return max(2, int(x / 2 + 0.5) * 2)
+    if w > h:
+        ow = min(max_side, w)
+        return ow, even(h * ow / w)
+    oh = min(max_side, h)
+    return even(w * oh / h), oh
+
+
 def media_map(timeline: dict, quality: str) -> dict:
     """assetId → presigned inputs. Final renders read originals (best quality); previews read 720p proxies."""
     out = {}
@@ -69,8 +80,10 @@ def media_map(timeline: dict, quality: str) -> dict:
             url = sign(m.get("imageKey") or (m.get("images") or [{}])[0].get("key"))
         else:
             url = sign(m.get("audioKey") or a.get("originalKey"))
-        out[aid] = {"url": url, "kind": kind, "width": int(m.get("width") or 0) or None,
-                    "height": int(m.get("height") or 0) or None, "hasAudio": bool(m.get("hasAudio", kind != "image")),
+        w, h = int(m.get("width") or 0) or None, int(m.get("height") or 0) or None
+        if kind == "video" and w and h and key == m.get("proxyKey"):
+            w, h = proxy_size(w, h)  # layout filters size their crops from these: they must match the decoded input
+        out[aid] = {"url": url, "kind": kind, "width": w, "height": h, "hasAudio": bool(m.get("hasAudio", kind != "image")),
                     "audioUrl": sign(m.get("audioKey")),
                     "originalUrl": sign(m.get("imageAlphaKey") or m.get("imageKey")) if kind == "image" else None,
                     "images": {int(i["index"]): sign(i["key"]) for i in m.get("images", [])}}
